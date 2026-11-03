@@ -134,27 +134,39 @@ export function summarize(job: Job, nowMs: number): [string, string, { urgent?: 
   return [problem ? "Index: needs attention" : "Index", lines.join("\n"), { urgent: Boolean(problem) }];
 }
 
-/** Polls for due jobs and processes them one at a time; [kick] skips the wait. */
+/**
+ * Polls for due jobs and processes them one at a time; [kick] skips the wait. [stop] lets the job
+ * in progress finish and starts no new one, so a restart never cuts an action in half.
+ */
 export function startWorker(deps: Deps, pollMs = 5_000) {
-  let running = false;
+  let current: Promise<void> | null = null;
+  let stopping = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const tick = async () => {
-    if (running) return;
-    running = true;
-    clearTimeout(timer);
-    try {
-      for (const job of deps.store.due((deps.now ?? Date.now)())) {
-        try {
-          await processJob(job, deps);
-        } catch (e) {
-          log("job crashed", { id: job.id, error: String(e) });
-        }
+  const run = async () => {
+    for (const job of deps.store.due((deps.now ?? Date.now)())) {
+      if (stopping) return;
+      try {
+        await processJob(job, deps);
+      } catch (e) {
+        log("job crashed", { id: job.id, error: String(e) });
       }
-    } finally {
-      running = false;
-      timer = setTimeout(tick, pollMs);
     }
   };
+  const tick = () => {
+    if (current || stopping) return;
+    clearTimeout(timer);
+    current = run().finally(() => {
+      current = null;
+      if (!stopping) timer = setTimeout(tick, pollMs);
+    });
+  };
   timer = setTimeout(tick, 0);
-  return { kick: () => void tick() };
+  return {
+    kick: tick,
+    stop: async () => {
+      stopping = true;
+      clearTimeout(timer);
+      await current;
+    },
+  };
 }

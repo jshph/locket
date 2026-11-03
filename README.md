@@ -38,7 +38,9 @@ The phone app sends each webhook once and never retries, so this service owns de
 - Code: `server.ts`, `src/`; tests: `bun test`
 - Secrets in `.env` (never commit or print): `INDEX_WEBHOOK_SECRET`, `TODOIST_API_TOKEN`, `NTFY_TOPIC`
 - Service: system unit `index-agent` next to `bb-app.service` (`deploy/index-agent.service`);
-  install with `sudo ./deploy/install.sh`. Logs: `journalctl -u index-agent -f`
+  install once with `sudo ./deploy/install.sh`. Load new code with `./scripts/restart.sh` (no sudo).
+  Logs: `journalctl -u index-agent -f`
+- Try the router without side effects: `bun run scripts/route.ts "remind me tomorrow at 9am to call the bank"`
 - Public URL (Tailscale Funnel :10000, re-applied by the unit): `https://your-host.your-tailnet.ts.net:10000/index`
 - Settings via env: `LOCAL_TZ` (default America/Bogota), `CLAUDE_MODEL`, `CLAUDE_EFFORT`,
   `BB_PROJECT`, `BB_ENVIRONMENT`, `BB_PERMISSION_MODE`, `MAX_SPAWNS_PER_HOUR`, `VAULT_DIR`, `INBOX_DIR`

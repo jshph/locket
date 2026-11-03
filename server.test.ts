@@ -230,3 +230,21 @@ test("an OAuth callback without the pending one-time state is refused", async ()
   const res = await finishGoogleAuth(new URL("https://x/oauth/google/callback?state=forged&code=abc"));
   expect(res.status).toBe(400);
 });
+
+// --- graceful stop ---
+
+import { startWorker } from "./src/worker.ts";
+
+test("stopping the worker lets the job in progress finish and starts no new one", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async () => { await gate; return [{ tool: "create_note", title: "t" }]; });
+  h.store.save({ ...h.job(), id: "j2", receivedAt: h.job().receivedAt + 1 });
+  const worker = startWorker(h.deps, 60_000);
+  await Bun.sleep(10); // first job is now waiting on the router
+  const stopped = worker.stop();
+  release();
+  await stopped;
+  const byId = Object.fromEntries(h.store.all().map((j) => [j.id, j.status]));
+  expect(byId).toEqual({ j1: "done", j2: "pending" });
+});

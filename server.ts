@@ -75,7 +75,15 @@ if (import.meta.main) {
   };
   const worker = startWorker(deps);
   setInterval(() => store.prune(Date.now()), 6 * 3600_000);
-  Bun.serve({ port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES, fetch: makeHandler(store, worker.kick) });
+  const server = Bun.serve({ port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES, fetch: makeHandler(store, worker.kick) });
+  // Restarts are a plain SIGTERM (see scripts/restart.sh); systemd's Restart=always brings the
+  // service back on the current code. Finish the job in progress first; saved jobs resume after.
+  process.on("SIGTERM", async () => {
+    log("stopping: finishing the job in progress");
+    server.stop();
+    await Promise.race([worker.stop(), Bun.sleep(25_000)]);
+    process.exit(0);
+  });
   log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured() });
   void selfCheck();
 }
