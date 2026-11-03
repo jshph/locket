@@ -6,7 +6,7 @@ webhook with the transcript; this service saves it, answers immediately, then ro
 
 | Action | What happens |
 |---|---|
-| `create_note` | `inbox/YYYY-MM-DD-HH-mm-ss <title>.md` in `/path/to/vault`, quick-capture frontmatter (`tags: [index]`, `people:`, `created: '[[date]]'`), transcript verbatim. Obsidian Sync carries it to the phone. |
+| `create_note` | `inbox/YYYY-MM-DD-HH-mm-ss <title>.md` in `/path/to/vault`, quick-capture frontmatter (empty `tags:` and `people:`, `created: '[[date]]'`), transcript verbatim. Obsidian Sync carries it to the phone. |
 | `create_reminder` | Todoist task (Todoist parses the due phrase; named lists map to projects, else Inbox). Ported from the app's Todoist plugin. |
 | `start_thread` | New bb thread in the `obsidian` project with the transcript verbatim as the prompt (permission mode from `BB_PERMISSION_MODE`). |
 

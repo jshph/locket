@@ -75,7 +75,7 @@ test("note is named and formatted like the vault's quick capture notes", () => {
   const rel = writeNote("The gate code is 4321", "Gate code for Sam's building", at, opts);
   expect(rel).toBe("inbox/2026-11-03-00-34-12 gate code for sam's building.md");
   expect(readFileSync(join(vault, rel), "utf8")).toBe(
-    "---\ntags:\n  - index\npeople:\ncreated: '[[2026-11-03]]'\n---\n\nThe gate code is 4321\n",
+    "---\ntags:\npeople:\ncreated: '[[2026-11-03]]'\n---\n\nThe gate code is 4321\n",
   );
   // Same second and title never overwrites; an empty title is just the timestamp.
   expect(writeNote("again", "Gate code for Sam's building", at, opts)).toBe("inbox/2026-11-03-00-34-12 gate code for sam's building (2).md");

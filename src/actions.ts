@@ -28,7 +28,7 @@ export function cleanTitle(title: string): string {
 
 /** Matches templates/quick capture.md, with the transcript verbatim as the body. */
 export function noteContent(transcript: string, date: string): string {
-  return `---\ntags:\n  - index\npeople:\ncreated: '[[${date}]]'\n---\n\n${transcript.trim()}\n`;
+  return `---\ntags:\npeople:\ncreated: '[[${date}]]'\n---\n\n${transcript.trim()}\n`;
 }
 
 /**
