@@ -9,10 +9,10 @@ webhook with the transcript; this service saves it, answers immediately, then ro
 | `create_note` | `inbox/YYYY-MM-DD-HH-mm-ss <title>.md` in `/path/to/vault`, quick-capture frontmatter (empty `tags:` and `people:`, `created: '[[date]]'`), transcript verbatim. Obsidian Sync carries it to the phone. |
 | `create_reminder` | Todoist task (Todoist parses the due phrase; named lists map to projects, else Inbox). Ported from the app's Todoist plugin. |
 | `start_thread` | New bb thread in the `obsidian` project with the transcript verbatim as the prompt (permission mode from `BB_PERMISSION_MODE`). |
-
 | `create_calendar_event` | Google Calendar event (default 1 hour), only when the words "calendar" or "event" were said — the app's hard guard; otherwise it becomes a timed reminder. Offered only once Google is connected. |
 
-Routing rules are ported from the Index agent (`reference/upstream/`).
+Routing rules are ported from the Index agent (`reference/upstream/`). Recordings made before 5am
+local time are "late night": "tomorrow" means the day you wake up into (today's date).
 
 ## Google Calendar
 

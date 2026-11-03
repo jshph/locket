@@ -96,8 +96,12 @@ test("router output is validated strictly", () => {
   expect(() => parseActions({ actions: [{ tool: "create_calendar_event", title: "x" }] })).toThrow();
   expect(() => parseActions({ actions: [{ tool: "create_note", title: "" }] })).toThrow();
   expect(() => parseActions({})).toThrow();
+  // 12:34 AM local: late night, so "tomorrow" is today's date.
   expect(routerUserMessage("hi", Date.parse("2026-11-03T05:34:00Z"), "America/Bogota"))
-    .toBe("Recorded: Tuesday, November 3, 2026 at 12:34 AM (America/Bogota)\nTranscript:\nhi");
+    .toBe('Recorded: Tuesday, November 3, 2026 at 12:34 AM (America/Bogota)\nLate night: "tomorrow" means Tuesday, November 3 (today\'s date), not the day after.\nTranscript:\nhi');
+  // 5:00 AM onwards is a normal day.
+  expect(routerUserMessage("hi", Date.parse("2026-11-03T10:00:00Z"), "America/Bogota"))
+    .toBe("Recorded: Tuesday, November 3, 2026 at 5:00 AM (America/Bogota)\nTranscript:\nhi");
 });
 
 // --- worker ---

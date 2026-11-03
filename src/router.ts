@@ -27,6 +27,7 @@ Interpretation rules:
 - Unless the user asks for something else, create a note. Do not assume an action that wasn't requested. When a request is ambiguous, lean towards a note.
 - "Remember to <do something>" means "remind me to": a reminder, with no due if no time was said. "Remember that <fact>" is a note.
 - A bare duration with no task (e.g. "20 minutes") is a note.
+- Late at night (a "Late night" line follows the recording time), the user hasn't slept yet: "tomorrow" means the day they wake up into, which is the date given on that line, and "tomorrow morning" is that date's morning. Resolve other relative days ("Friday", "in 2 days") from that same date.
 - Never invent or guess times. If the user started to give a time but it was cut off (e.g. "remind me at"), do not create a reminder; create a note instead.
 {{CALENDAR_RULE}}
 - Prioritise the first action the user requests. Do not also create a note when you already took another requested action.
@@ -90,12 +91,22 @@ const BASE_SCHEMA = {
   },
 };
 
+/** Before this local hour a recording counts as "late night": the user's day hasn't ended yet. */
+export const LATE_NIGHT_END_HOUR = 5;
+
 export function routerUserMessage(transcript: string, recordedAt: number, tz: string): string {
+  const at = new Date(recordedAt);
   const when = new Intl.DateTimeFormat("en-US", {
     timeZone: tz, weekday: "long", year: "numeric", month: "long", day: "numeric",
     hour: "numeric", minute: "2-digit",
-  }).format(new Date(recordedAt));
-  return `Recorded: ${when} (${tz})\nTranscript:\n${transcript}`;
+  }).format(at);
+  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(at));
+  const lateNight = hour < LATE_NIGHT_END_HOUR
+    ? `\nLate night: "tomorrow" means ${new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, weekday: "long", month: "long", day: "numeric",
+    }).format(at)} (today's date), not the day after.`
+    : "";
+  return `Recorded: ${when} (${tz})${lateNight}\nTranscript:\n${transcript}`;
 }
 
 /** Validates the model's structured output; anything malformed is an error, never a guess. */
