@@ -113,6 +113,7 @@ function harness(route: Deps["route"]) {
       writeNote: (t, title) => { calls.notes.push(`${title}|${t}`); return `inbox/${title || "untitled"}.md`; },
       createTask: async (a) => { if (taskFailures-- > 0) throw new Error("todoist down"); calls.tasks.push(a.title); return a.title; },
       spawnThread: async (p) => { calls.threads.push(p); return "thr_x"; },
+      createEvent: async (a) => a.title,
     },
     notify: async (title, msg) => { calls.notified.push(`${title}: ${msg}`); },
   };
@@ -190,4 +191,38 @@ test("an action that fails for good leaves the words in a fallback note and aler
   expect(job.plan![0].status).toBe("failed");
   expect(job.fallbackNote).toBe("inbox/untitled.md");
   expect(h.calls.notified[0]).toContain("Couldn't create Todoist task: Call the bank");
+});
+
+// --- calendar ---
+
+import { addMinutesLocal, finishGoogleAuth } from "./src/google.ts";
+import { actionsSchema, applyCalendarGuard, systemPrompt } from "./src/router.ts";
+
+test("calendar events need the words calendar/event, else they become a timed reminder", () => {
+  const ev = { tool: "create_calendar_event" as const, title: "Dentist", start: "2026-11-06T14:00" };
+  expect(applyCalendarGuard([ev], "Add an event to my calendar Friday 2pm, dentist")).toEqual([ev]);
+  expect(applyCalendarGuard([ev], "Dentist Friday at 2pm eventually")).toEqual([
+    { tool: "create_reminder", title: "Dentist", due: "2026-11-06 14:00" },
+  ]);
+});
+
+test("calendar times are validated and default to one hour", () => {
+  expect(parseActions({ actions: [{ tool: "create_calendar_event", title: "Dentist", start: "2026-11-06T14:00", end: "nope", location: " Main St " }] }))
+    .toEqual([{ tool: "create_calendar_event", title: "Dentist", start: "2026-11-06T14:00", location: "Main St" }]);
+  expect(() => parseActions({ actions: [{ tool: "create_calendar_event", title: "x", start: "Friday 2pm" }] })).toThrow();
+  expect(addMinutesLocal("2026-11-06T23:30", 60)).toBe("2026-11-07T00:30");
+});
+
+test("the calendar action is only offered once Google is connected", () => {
+  expect(systemPrompt(false)).not.toContain("create_calendar_event");
+  expect(systemPrompt(false)).toContain("Calendar events are not available");
+  expect(systemPrompt(true)).toContain("create_calendar_event: ONLY when");
+  expect(systemPrompt(true)).not.toContain("{{");
+  expect(actionsSchema(false).properties.actions.items.anyOf.length).toBe(3);
+  expect(actionsSchema(true).properties.actions.items.anyOf.length).toBe(4);
+});
+
+test("an OAuth callback without the pending one-time state is refused", async () => {
+  const res = await finishGoogleAuth(new URL("https://x/oauth/google/callback?state=forged&code=abc"));
+  expect(res.status).toBe(400);
 });

@@ -10,8 +10,17 @@ webhook with the transcript; this service saves it, answers immediately, then ro
 | `create_reminder` | Todoist task (Todoist parses the due phrase; named lists map to projects, else Inbox). Ported from the app's Todoist plugin. |
 | `start_thread` | New bb thread in the `obsidian` project with the transcript verbatim as the prompt (permission mode from `BB_PERMISSION_MODE`). |
 
-Routing rules are ported from the Index agent (`reference/upstream/`). Calendar events are not
-connected yet; calendar requests become reminders.
+| `create_calendar_event` | Google Calendar event (default 1 hour), only when the words "calendar" or "event" were said — the app's hard guard; otherwise it becomes a timed reminder. Offered only once Google is connected. |
+
+Routing rules are ported from the Index agent (`reference/upstream/`).
+
+## Google Calendar
+
+One-time setup: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env` (a "Web application" OAuth
+client whose redirect URI is `https://your-host.your-tailnet.ts.net:10000/oauth/google/callback`,
+consent screen **In production**), restart the service, then `bun run scripts/google-auth.ts` and
+open the printed link. The refresh token is kept in `state/google-token.json` (scope
+`calendar.events`). `GOOGLE_CALENDAR_ID` defaults to `primary`.
 
 ## Reliability
 

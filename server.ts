@@ -3,6 +3,7 @@
 // and bb threads (see src/worker.ts).
 
 import { createTodoistTask, spawnThread, writeNote } from "./src/actions.ts";
+import { calendarConfigured, createCalendarEvent, finishGoogleAuth } from "./src/google.ts";
 import { childEnv, config } from "./src/config.ts";
 import { ntfyNotifier } from "./src/notify.ts";
 import { claudeRouter } from "./src/router.ts";
@@ -18,6 +19,7 @@ export function makeHandler(store: JobStore, kick: () => void, secret = config.w
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
     if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");
+    if (req.method === "GET" && url.pathname === "/oauth/google/callback") return finishGoogleAuth(url);
     if (req.method !== "POST" || url.pathname !== "/index") return new Response("not found", { status: 404 });
 
     const delivery = await verifyDelivery(req, secret);
@@ -68,12 +70,12 @@ if (import.meta.main) {
   const deps: Deps = {
     store,
     route: claudeRouter,
-    effects: { writeNote, createTask: createTodoistTask, spawnThread },
+    effects: { writeNote, createTask: createTodoistTask, spawnThread, createEvent: createCalendarEvent },
     notify: ntfyNotifier,
   };
   const worker = startWorker(deps);
   setInterval(() => store.prune(Date.now()), 6 * 3600_000);
   Bun.serve({ port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES, fetch: makeHandler(store, worker.kick) });
-  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz });
+  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured() });
   void selfCheck();
 }

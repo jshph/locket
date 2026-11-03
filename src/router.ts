@@ -7,31 +7,60 @@
 
 import { childEnv, config } from "./config.ts";
 import { mkdirSync } from "node:fs";
+import { calendarConfigured } from "./google.ts";
 import { join } from "node:path";
 
 export type RouterAction =
   | { tool: "create_note"; title: string }
   | { tool: "create_reminder"; title: string; due?: string; lead_hours?: number; list?: string }
-  | { tool: "start_thread"; title: string };
+  | { tool: "start_thread"; title: string }
+  | { tool: "create_calendar_event"; title: string; start: string; end?: string; location?: string; description?: string };
 
-export const SYSTEM_PROMPT = `You route one voice note from the user's Index 01 ring into actions. You never talk to the user; you only return JSON.
+const PROMPT_HEAD = `You route one voice note from the user's Index 01 ring into actions. You never talk to the user; you only return JSON.
 
 Actions:
 - create_note: save a note, idea, thought, or fact to remember. title = a 3-7 word, lowercase, natural-language name that captures the note's essence (e.g. "first dates as communal discovery", "chat with rui about pricing"). The user's words are saved verbatim by the system; do not restate them.
 - create_reminder: a to-do. Use for "remind me to...", "remember to <do something>", a task paired with a future date or time (e.g. "Thursday at 2pm try the agent SDK", "tomorrow: call the bank", "in 20 minutes take the bread out"), and items for a named list (shopping, groceries, to-do). title = the task in short imperative form, e.g. "Call the bank". due = only a date/time the user actually said, in English; rewrite relative dates as absolute ones using the recording time (e.g. "Nov 4 2026 at 3pm", "in 20 minutes" -> "Nov 3 2026 at 12:54am"), but keep recurring phrases as said (e.g. "every monday at 9am"). Omit due when no time was given. lead_hours = only if the user asked to be reminded a certain time before. list = the list name if the user named one (e.g. "Shopping"); one action per item when several items go on a list.
-- start_thread: hand open-ended work to an AI agent that has full access to the user's Obsidian vault and the web. Use for research, drafting, writing, analysis, planning, answering questions, summarizing or reorganizing their notes, or anything else the other actions can't do. title = a short description of the work. The system passes the user's full words to the agent.
+{{CALENDAR_ACTION}}- start_thread: hand open-ended work to an AI agent that has full access to the user's Obsidian vault and the web. Use for research, drafting, writing, analysis, planning, answering questions, summarizing or reorganizing their notes, or anything else the other actions can't do. title = a short description of the work. The system passes the user's full words to the agent.
 
 Interpretation rules:
 - Unless the user asks for something else, create a note. Do not assume an action that wasn't requested. When a request is ambiguous, lean towards a note.
 - "Remember to <do something>" means "remind me to": a reminder, with no due if no time was said. "Remember that <fact>" is a note.
 - A bare duration with no task (e.g. "20 minutes") is a note.
 - Never invent or guess times. If the user started to give a time but it was cut off (e.g. "remind me at"), do not create a reminder; create a note instead.
-- Calendar events are not available. If the user asks to add an event to their calendar with a clear spoken time, create a reminder with that time instead. "Schedule time with X", "book", "meeting" or "appointment" without a time are reminders or notes, never invent a time.
+{{CALENDAR_RULE}}
 - Prioritise the first action the user requests. Do not also create a note when you already took another requested action.
 - Always return at least one action.`;
 
+// Ported from CreateCalendarEventTool.kt (description + extraContext).
+const CALENDAR_ACTION = `- create_calendar_event: ONLY when the user literally says "calendar" or "event" while asking to create one, e.g. "add an event to my calendar", "put an event on my calendar for Friday at 3pm". Requires a clear, specific date and time spoken by the user. start = local wall-clock time "YYYY-MM-DDTHH:MM" resolved from the recording time. end = same format, only if the user gave an end time or a duration (compute it from the start); omit for the default 1-hour event. location / description only if the user said them.
+`;
+const CALENDAR_RULE_ON = `- The words "schedule", "create", "book", "meeting", "appointment" or "time" on their own NEVER mean a calendar event; "schedule time with X" or "book an appointment" are reminders or notes. "Remind me" or a to-do is a reminder, never an event. On the edge between a reminder and an event, prefer the reminder. If an event's time is vague, ambiguous or missing, create a note instead.`;
+const CALENDAR_RULE_OFF = `- Calendar events are not available. If the user asks to add an event to their calendar with a clear spoken time, create a reminder with that time instead. "Schedule time with X", "book", "meeting" or "appointment" without a time are reminders or notes, never invent a time.`;
+
+export function systemPrompt(calendar: boolean): string {
+  return PROMPT_HEAD
+    .replace("{{CALENDAR_ACTION}}", calendar ? CALENDAR_ACTION : "")
+    .replace("{{CALENDAR_RULE}}", calendar ? CALENDAR_RULE_ON : CALENDAR_RULE_OFF);
+}
+
 const titleField = { type: "string", minLength: 1 };
-export const ACTIONS_SCHEMA = {
+const localTime = { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" };
+const CALENDAR_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["tool", "title", "start"],
+  properties: {
+    tool: { const: "create_calendar_event" }, title: titleField, start: localTime, end: localTime,
+    location: { type: "string" }, description: { type: "string" },
+  },
+};
+
+export function actionsSchema(calendar: boolean) {
+  const schema = structuredClone(BASE_SCHEMA);
+  if (calendar) schema.properties.actions.items.anyOf.push(CALENDAR_SCHEMA as any);
+  return schema;
+}
+
+const BASE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["actions"],
@@ -80,6 +109,15 @@ export function parseActions(structured: unknown): RouterAction[] {
       case "create_note":
       case "start_thread":
         return { tool: a.tool, title };
+      case "create_calendar_event": {
+        const local = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+        if (typeof a.start !== "string" || !local.test(a.start)) throw new Error("calendar event without a valid start");
+        const e: RouterAction = { tool: "create_calendar_event", title, start: a.start };
+        if (typeof a.end === "string" && local.test(a.end)) e.end = a.end;
+        if (typeof a.location === "string" && a.location.trim()) e.location = a.location.trim();
+        if (typeof a.description === "string" && a.description.trim()) e.description = a.description.trim();
+        return e;
+      }
       case "create_reminder": {
         const r: RouterAction = { tool: "create_reminder", title };
         if (typeof a.due === "string" && a.due.trim()) r.due = a.due.trim();
@@ -93,19 +131,34 @@ export function parseActions(structured: unknown): RouterAction[] {
   });
 }
 
+/**
+ * The app's deterministic trigger guard (CreateCalendarEventTool.mentionsCalendarOrEvent): an
+ * event is only created when the user's words contain "calendar" or "event(s)". Anything else
+ * the model proposed as an event becomes a reminder at the same time, so the time isn't lost.
+ */
+const TRIGGER_WORDS = /\b(calendar|events?)\b/i;
+export function applyCalendarGuard(actions: RouterAction[], transcript: string): RouterAction[] {
+  if (TRIGGER_WORDS.test(transcript)) return actions;
+  return actions.map((a) =>
+    a.tool === "create_calendar_event"
+      ? { tool: "create_reminder", title: a.title, due: a.start.replace("T", " ") }
+      : a);
+}
+
 export type Router = (transcript: string, recordedAt: number) => Promise<RouterAction[]>;
 
 const ROUTER_TIMEOUT_MS = 90_000;
 
 export const claudeRouter: Router = async (transcript, recordedAt) => {
   // Empty working directory so no project CLAUDE.md, memory or settings are picked up.
+  const calendar = calendarConfigured();
   const cwd = join(config.stateDir, "claude-cwd");
   mkdirSync(cwd, { recursive: true });
   const proc = Bun.spawn([
     config.claudeBin, "-p",
     "--output-format", "json",
-    "--json-schema", JSON.stringify(ACTIONS_SCHEMA),
-    "--system-prompt", SYSTEM_PROMPT,
+    "--json-schema", JSON.stringify(actionsSchema(calendar)),
+    "--system-prompt", systemPrompt(calendar),
     "--tools", "",
     "--strict-mcp-config",
     "--setting-sources", "",
@@ -130,7 +183,7 @@ export const claudeRouter: Router = async (transcript, recordedAt) => {
     if (result.is_error) {
       throw new Error(`claude error ${result.api_error_status ?? ""}: ${String(result.result ?? "").slice(0, 300)}`);
     }
-    return parseActions(result.structured_output);
+    return applyCalendarGuard(parseActions(result.structured_output), transcript);
   } finally {
     clearTimeout(timer);
   }

@@ -10,6 +10,7 @@ export type Effects = {
   writeNote: (transcript: string, title: string, recordedAt: number) => string;
   createTask: (a: Extract<RouterAction, { tool: "create_reminder" }>) => Promise<string>;
   spawnThread: (prompt: string) => Promise<string>;
+  createEvent: (a: Extract<RouterAction, { tool: "create_calendar_event" }>) => Promise<string>;
 };
 
 export type Deps = { store: JobStore; route: Router; effects: Effects; notify: Notifier; now?: () => number };
@@ -23,6 +24,14 @@ const LABEL: Record<RouterAction["tool"], string> = {
   create_note: "Note",
   create_reminder: "Todoist",
   start_thread: "Thread",
+  create_calendar_event: "Calendar",
+};
+
+const FAILED: Record<RouterAction["tool"], string> = {
+  create_note: "save note",
+  create_reminder: "create Todoist task",
+  start_thread: "start thread",
+  create_calendar_event: "create calendar event",
 };
 
 function log(msg: string, extra: Record<string, unknown> = {}) {
@@ -37,6 +46,8 @@ async function runAction(a: ActionState, job: Job, effects: Effects): Promise<st
       return effects.createTask(a);
     case "start_thread":
       return effects.spawnThread(job.transcript);
+    case "create_calendar_event":
+      return effects.createEvent(a);
   }
 }
 
@@ -114,7 +125,7 @@ export async function processJob(job: Job, deps: Deps): Promise<void> {
 export function summarize(job: Job, nowMs: number): [string, string, { urgent?: boolean }] {
   const lines = (job.plan ?? []).map((a) =>
     a.status === "done" ? `${LABEL[a.tool]}: ${a.tool === "create_note" ? a.title || a.result : a.title}`
-      : `Couldn't ${a.tool === "create_reminder" ? "create Todoist task" : a.tool === "start_thread" ? "start thread" : "save note"}: ${a.title}`);
+      : `Couldn't ${FAILED[a.tool]}: ${a.title}`);
   if (job.routedBy === "fallback") lines.unshift("Router unavailable, saved your words as a note.");
   if (job.fallbackNote) lines.push(`Saved your words as a note: ${job.fallbackNote}`);
   const lagMin = Math.round((nowMs - job.recordedAt) / 60_000);

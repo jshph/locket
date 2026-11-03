@@ -23,6 +23,10 @@ export const config = {
   claudeEffort: env.CLAUDE_EFFORT ?? "low",
 
   todoistToken: env.TODOIST_API_TOKEN ?? "",
+  googleClientId: env.GOOGLE_CLIENT_ID ?? "",
+  googleClientSecret: env.GOOGLE_CLIENT_SECRET ?? "",
+  googleRedirectUri: env.GOOGLE_REDIRECT_URI ?? "https://your-host.your-tailnet.ts.net:10000/oauth/google/callback",
+  googleCalendarId: env.GOOGLE_CALENDAR_ID ?? "primary",
   ntfyServer: env.NTFY_SERVER ?? "https://ntfy.sh",
   ntfyTopic: env.NTFY_TOPIC ?? "",
 };
