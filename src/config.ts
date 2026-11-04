@@ -19,6 +19,13 @@ const publicUrl = (env.PUBLIC_URL ?? "").replace(/\/+$/, "");
 export const config = {
   host: env.HOST ?? "127.0.0.1",
   port: num("PORT", 8790),
+  /**
+   * Second listener for routes that must not be on the public internet (the ring webhook can
+   * start agent threads). Put it behind a tailnet-only `tailscale serve`. 0 turns it off.
+   */
+  privatePort: num("PRIVATE_PORT", 8792),
+  /** Also serve /index on the public listener. Only for migrating a ring app's webhook URL. */
+  indexPublic: (env.INDEX_PUBLIC ?? "0") === "1",
   /** The HTTPS origin phones reach this server at, e.g. https://box.tailnet.ts.net:10000. */
   publicUrl,
   webhookSecret: env.INDEX_WEBHOOK_SECRET ?? "",

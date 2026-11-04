@@ -64,7 +64,12 @@ export async function handleOmi(req: Request, url: URL, omi: OmiRoute): Promise<
   return Response.json({ ok: true, queued: conv.id });
 }
 
-export function makeHandler(store: JobStore, kick: () => void, secret = config.webhookSecret, omi?: OmiRoute) {
+/**
+ * Routes for one listener. The ring webhook can start agent threads, so it is served only when
+ * [opts.index] is set: on the private listener (tailnet only), never through the public Funnel one
+ * unless INDEX_PUBLIC=1. A separate socket, not a path rule, so no proxy config can re-expose it.
+ */
+export function makeHandler(store: JobStore, kick: () => void, secret = config.webhookSecret, omi?: OmiRoute, opts: { index?: boolean; name?: string } = { index: true }) {
   return async function handle(req: Request, server?: Server<any>): Promise<Response | undefined> {
     const url = new URL(req.url);
     // The Omi app's Custom live transcription (WebSocket), piped to the local speech service.
@@ -79,15 +84,15 @@ export function makeHandler(store: JobStore, kick: () => void, secret = config.w
     if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");
     if (req.method === "GET" && url.pathname === "/oauth/google/callback") return finishGoogleAuth(url);
     if (omi && req.method === "POST" && url.pathname.startsWith("/omi/")) return handleOmi(req, url, omi);
-    if (req.method !== "POST" || url.pathname !== "/index") return new Response("not found", { status: 404 });
+    if (!opts.index || req.method !== "POST" || url.pathname !== "/index") return new Response("not found", { status: 404 });
 
     const delivery = await verifyDelivery(req, secret);
     if (delivery instanceof Response) {
-      log("rejected", { status: delivery.status });
+      log("rejected", { status: delivery.status, listener: opts.name });
       return delivery;
     }
     if (delivery.kind === "test") {
-      log("test event verified", { trigger: delivery.trigger });
+      log("test event verified", { trigger: delivery.trigger, listener: opts.name });
       return new Response("ok (test event verified)");
     }
     if (store.has(delivery.id)) {
@@ -100,7 +105,7 @@ export function makeHandler(store: JobStore, kick: () => void, secret = config.w
       recordedAt: delivery.recordedAt, receivedAt: now, status: "pending", nextAttemptAt: now,
       routeAttempts: 0,
     });
-    log("queued", { id: delivery.id, trigger: delivery.trigger, chars: delivery.transcription.length });
+    log("queued", { id: delivery.id, trigger: delivery.trigger, chars: delivery.transcription.length, listener: opts.name });
     kick();
     return Response.json({ ok: true, queued: delivery.id });
   };
@@ -153,20 +158,31 @@ if (import.meta.main) {
     store.prune(Date.now());
     omiStore.prune(Date.now());
   }, 6 * 3600_000);
+  type Fetch = (req: Request, server: Server<any>) => Promise<Response | undefined>;
+  // Public listener (behind Tailscale Funnel): Omi's webhook and live STT, Google's callback.
   const server = Bun.serve({
     port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES,
-    fetch: makeHandler(store, worker.kick, config.webhookSecret, omi) as (req: Request, server: Server<any>) => Promise<Response | undefined>,
+    fetch: makeHandler(store, worker.kick, config.webhookSecret, omi, { index: config.indexPublic, name: "public" }) as Fetch,
     websocket: sttWebsocket,
   });
+  // Private listener (behind a tailnet-only `tailscale serve`): the ring webhook, plus the rest.
+  const privateServer = config.privatePort
+    ? Bun.serve({
+      port: config.privatePort, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES,
+      fetch: makeHandler(store, worker.kick, config.webhookSecret, omi, { index: true, name: "private" }) as Fetch,
+      websocket: sttWebsocket,
+    })
+    : null;
   // Restarts are a plain SIGTERM (see scripts/restart.sh); systemd's Restart=always brings the
   // service back on the current code. Finish the job in progress first; saved jobs resume after.
   process.on("SIGTERM", async () => {
     log("stopping: finishing the job in progress");
     server.stop();
+    privateServer?.stop();
     await Promise.race([Promise.all([worker.stop(), omiWorker?.stop()]), Bun.sleep(25_000)]);
     speech?.stop();
     process.exit(0);
   });
-  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured(), omi: Boolean(omi), speech: Boolean(speech) });
+  log("listening", { host: config.host, port: config.port, privatePort: config.privatePort || null, indexPublic: config.indexPublic, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured(), omi: Boolean(omi), speech: Boolean(speech) });
   void selfCheck();
 }

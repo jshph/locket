@@ -8,8 +8,10 @@ deployment facts and is never committed.
 
 ## Layout
 
-- `server.ts`: HTTP routes (`/index`, `/omi/<secret>`, `/stt/<secret>`, `/healthz`,
-  `/oauth/google/callback`), wiring, startup checks, SIGTERM handling
+- `server.ts`: two listeners. Public (`PORT`, behind Funnel): `/omi/<secret>`, `/stt/<secret>`,
+  `/oauth/google/callback`, `/healthz`. Private (`PRIVATE_PORT`, tailnet-only serve): also
+  `/index`, which can start agent threads, so never put it on the public listener
+  (`INDEX_PUBLIC` exists only for migrating a ring app URL). Wiring, startup checks, SIGTERM.
 - Ring: `src/webhook.ts` (signature, protocol v1), `src/store.ts` (one job file per delivery),
   `src/router.ts` (`claude -p` routing, adapted from `reference/upstream/`), `src/worker.ts`
   (route once, run actions, retries, fallback note), `src/actions.ts` (note, Todoist, bb thread),

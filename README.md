@@ -20,8 +20,9 @@ It is built for one person on one machine, and assumes a fair amount of tooling 
 
 - Linux with systemd, [Bun](https://bun.sh) ≥ 1.2, [uv](https://docs.astral.sh/uv/), Python 3.12
 - [Claude Code](https://claude.com/claude-code) logged in to a Claude subscription (`claude -p`)
-- A public HTTPS URL for this machine. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
-  works well; the unit re-applies it on start.
+- [Tailscale](https://tailscale.com) on this machine and your phone. Omi's webhook comes from
+  Omi's cloud, so it needs a public HTTPS URL ([Funnel](https://tailscale.com/kb/1223/funnel));
+  the ring webhook stays tailnet-only. The unit re-applies both on start.
 - For Omi distillation: the [Margins](https://github.com/byenzyme/margins) CLI with a Workspace
   over your vault (`margins init <vault>`), so the distiller can run `margins recall`.
 - Optional: Todoist API token, a Google OAuth client, bb, an [ntfy](https://ntfy.sh) topic for
@@ -45,7 +46,12 @@ Startup checks report unusable settings in the log (and one ntfy).
 
 ### Pebble Index 01
 
-Index settings → Webhook → choose a gesture → URL `<PUBLIC_URL>/index` → payload
+The ring webhook can start agent threads, so it is never on the public internet: it's served
+only on the private listener, which the unit exposes on your tailnet at
+`https://<host>.<tailnet>.ts.net:9443`. The Pebble app posts from your phone, so the phone must be
+on the tailnet (Tailscale running).
+
+Index settings → Webhook → choose a gesture → URL `https://<host>.<tailnet>.ts.net:9443/index` → payload
 **Transcription only** → **Sign requests** with `INDEX_WEBHOOK_SECRET` → Send test event →
 Save. Route that gesture to **Webhook only**. Try the router without side effects:
 `bun run scripts/route.ts "remind me tomorrow at 9am to call the bank"`.

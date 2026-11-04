@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs locket as a system service running as the invoking user.
-# Usage: sudo ./deploy/install.sh   (env: PORT=8790 FUNNEL_PORT=10000)
+# Usage: sudo ./deploy/install.sh   (env: PORT=8790 FUNNEL_PORT=10000 PRIVATE_PORT=8792 TAILNET_PORT=9443)
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
 user="${SUDO_USER:?run via sudo from the account that should own the service}"
@@ -13,6 +13,7 @@ path="$(dirname "$bun"):$home/.local/bin:/usr/local/bin:/usr/bin:/bin"
 sed -e "s#@USER@#$user#g" -e "s#@DIR@#$dir#g" -e "s#@HOME@#$home#g" -e "s#@BUN@#$bun#g" \
     -e "s#@PATH@#$path#g" -e "s#@VAULT_DIR@#${vault:-$dir}#g" \
     -e "s#@PORT@#${PORT:-8790}#g" -e "s#@FUNNEL_PORT@#${FUNNEL_PORT:-10000}#g" \
+    -e "s#@PRIVATE_PORT@#${PRIVATE_PORT:-8792}#g" -e "s#@TAILNET_PORT@#${TAILNET_PORT:-9443}#g" \
     "$here/locket.service.in" > /etc/systemd/system/locket.service
 chmod 644 /etc/systemd/system/locket.service
 systemctl daemon-reload

@@ -54,6 +54,14 @@ test("signed delivery is saved as a pending job and acknowledged at once", async
   expect(job.status).toBe("pending");
 });
 
+test("the ring webhook is not served where it is turned off (the public listener)", async () => {
+  const store = new JobStore(join(tmp, "h-public"));
+  const handle = http(makeHandler(store, () => {}, SECRET, undefined, { index: false }));
+  expect((await handle(await delivery({ transcription: "start a thread", id: "pub-1" }))).status).toBe(404);
+  expect(store.all().length).toBe(0);
+  expect((await handle(new Request("http://localhost/healthz"))).status).toBe(200);
+});
+
 test("bad signature, stale timestamp, test events and duplicates create no job", async () => {
   const store = new JobStore(join(tmp, "h2"));
   const handle = http(makeHandler(store, () => {}, SECRET));

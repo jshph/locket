@@ -16,9 +16,12 @@ Environment=HOME=@HOME@
 Environment=PATH=@PATH@
 Environment=HOST=127.0.0.1
 Environment=PORT=@PORT@
+Environment=PRIVATE_PORT=@PRIVATE_PORT@
 ExecStart=@BUN@ run server.ts
-# Public HTTPS via Tailscale Funnel. The config also persists in tailscaled; re-applying is harmless.
+# Public HTTPS via Tailscale Funnel for the public listener (Omi), and tailnet-only HTTPS for the
+# private one (the ring webhook). Both persist in tailscaled; re-applying is harmless.
 ExecStartPost=-/usr/bin/tailscale funnel --bg --https=@FUNNEL_PORT@ http://127.0.0.1:@PORT@
+ExecStartPost=-/usr/bin/tailscale serve --bg --https=@TAILNET_PORT@ http://127.0.0.1:@PRIVATE_PORT@
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
