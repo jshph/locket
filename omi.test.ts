@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { notePrefix, userMessage, type Distiller } from "./src/distill.ts";
-import { OmiStore, parseOmiPayload, readyGroups, renderTranscript, type OmiConversation } from "./src/omi.ts";
+import { exclusionReason, OmiStore, parseOmiPayload, readyGroups, renderTranscript, type OmiConversation } from "./src/omi.ts";
 import { decide, MAX_PEOPLE, runHook, type GuardContext } from "./src/omi-guard.ts";
 import { DISTILL_BACKOFF_MS, groupConversations, processNote, type OmiDeps } from "./src/omi-worker.ts";
 import { JobStore } from "./src/store.ts";
@@ -75,6 +75,19 @@ test("transcript labels Me, Omi-named voices and numbered speakers, joining turn
   expect(msg).toContain('Note filename prefix (use exactly): "2026-11-04-14-00-00 "');
   expect(msg).toContain("- Me: 14 words");
   expect(notePrefix([c], "America/Bogota")).toBe("2026-11-04-14-00-00 ");
+});
+
+test("background conversations are excluded unless the owner talked enough; discards always are", () => {
+  const owner = (words: number) => ({ text: Array(words).fill("w").join(" "), speaker: "SPEAKER_00", isUser: true, start: 0, end: 1 });
+  const tv = { text: Array(500).fill("w").join(" "), speaker: "SPEAKER_01", isUser: false, start: 0, end: 1 };
+  const base = conv("x", 0, 5);
+  expect(exclusionReason({ ...base, salience: "background", segments: [tv, owner(10)] }, 60)).toBe("background");
+  expect(exclusionReason({ ...base, salience: "background", segments: [tv, owner(60)] }, 60)).toBeNull();
+  expect(exclusionReason({ ...base, salience: "highlight", segments: [tv] }, 60)).toBeNull();
+  expect(exclusionReason({ ...base, segments: [tv] }, 60)).toBeNull(); // no salience: keep
+  expect(exclusionReason({ ...base, discarded: true, salience: "highlight" }, 60)).toBe("discarded");
+  const parsed = parseOmiPayload(payload({ structured: { title: "t", salience: "background" } }), T0) as OmiConversation;
+  expect(parsed.salience).toBe("background");
 });
 
 // --- merging ---
@@ -155,7 +168,7 @@ test("the daily cap defers notes instead of dropping them", async () => {
 
 // --- webhook route ---
 
-test("the /omi route needs the secret, saves once, and keeps discarded conversations out", async () => {
+test("the /omi route needs the secret, saves once, and keeps discarded and background conversations out", async () => {
   const store = new OmiStore(join(tmp, "route"));
   let kicked = 0;
   const handle = makeHandler(new JobStore(join(tmp, "route-jobs")), () => {}, "x", { store, kick: () => kicked++, secret: SECRET });
@@ -165,9 +178,11 @@ test("the /omi route needs the secret, saves once, and keeps discarded conversat
   expect((await post(`/omi/${SECRET}?uid=u1`, payload())).status).toBe(200);
   expect(await (await post(`/omi/${SECRET}?uid=u1`, payload())).text()).toBe("duplicate conversation");
   expect((await post(`/omi/${SECRET}`, payload({ id: "conv-2", discarded: true }))).status).toBe(200);
+  expect((await post(`/omi/${SECRET}`, payload({ id: "conv-3", structured: { title: "TV", salience: "background" } }))).status).toBe(200);
   expect((await post(`/omi/${SECRET}`, { nope: 1 })).status).toBe(422);
-  expect(kicked).toBe(2);
+  expect(kicked).toBe(3);
   expect(store.conversation("conv-2")?.noteId).toBe("discarded");
+  expect(store.conversation("conv-3")?.noteId).toBe("background");
   expect(store.conversation("conv-1")?.noteId).toBeUndefined();
 });
 

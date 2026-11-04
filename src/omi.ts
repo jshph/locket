@@ -25,6 +25,8 @@ export type OmiConversation = {
   finishedAt: number;
   receivedAt: number;
   discarded: boolean;
+  /** Omi's label: "highlight" (owner engaged) or "background" (TV, ambient, others talking). */
+  salience?: string;
   omiTitle?: string;
   segments: OmiSegment[];
   /** The note job this conversation was assigned to, once grouped. */
@@ -83,13 +85,27 @@ export function parseOmiPayload(body: unknown, receivedAt: number): OmiConversat
     finishedAt: Math.max(finishedAt, startedAt),
     receivedAt,
     discarded: b.discarded === true,
+    salience: typeof b.structured?.salience === "string" ? b.structured.salience : undefined,
     omiTitle: typeof b.structured?.title === "string" ? b.structured.title : undefined,
     segments,
   };
 }
 
-export function wordCount(c: OmiConversation): number {
-  return c.segments.reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0);
+export function wordCount(c: OmiConversation, onlyOwner = false): number {
+  return c.segments.filter((s) => !onlyOwner || s.isUser)
+    .reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0);
+}
+
+/**
+ * Why a conversation should never be distilled or merged, or null to keep it. Omi's discards are
+ * dropped. So is "background" (Omi saw the owner not engaged: TV, ambient chatter, other people),
+ * which would otherwise chain unrelated conversations together, unless the owner still said at
+ * least [ownerWordsToKeep] words, in case Omi misjudged solo thinking out loud.
+ */
+export function exclusionReason(c: OmiConversation, ownerWordsToKeep: number): "discarded" | "background" | null {
+  if (c.discarded) return "discarded";
+  if (c.salience === "background" && wordCount(c, true) < ownerWordsToKeep) return "background";
+  return null;
 }
 
 /** "Me" for the device owner, the name the user gave a voice in Omi, else Omi's "Speaker A". */

@@ -21,7 +21,10 @@ transcript) to `/omi/<OMI_WEBHOOK_SECRET>`. Instead of saving the raw transcript
 distills it into one connected note the way the Margins skill does, using your vault as context:
 
 1. The JSON is saved to `state/omi/conversations/` (kept 30 days, never in the vault) and answered
-   with 200 at once. Repeated conversation IDs and conversations Omi marked `discarded` are ignored.
+   with 200 at once. Repeated conversation IDs and conversations Omi marked `discarded` are ignored,
+   and so are ones Omi labeled `background` (TV, ambient chatter, other people talking) unless you
+   said at least `OMI_BACKGROUND_KEEP_OWNER_WORDS` (60) words in them. Ignored conversations never
+   merge, so background noise can't glue two real conversations into one note.
 2. Conversations less than `OMI_MERGE_GAP_MIN` (10) minutes apart are merged into one note; a group
    is distilled once nothing new has arrived for that long. Groups under `OMI_MIN_WORDS` (40) are
    dropped silently.

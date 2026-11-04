@@ -12,7 +12,7 @@ import { JobStore } from "./src/store.ts";
 import { verifyDelivery, MAX_BODY_BYTES } from "./src/webhook.ts";
 import { startWorker, type Deps } from "./src/worker.ts";
 import { claudeDistiller } from "./src/distill.ts";
-import { OmiStore, parseOmiPayload } from "./src/omi.ts";
+import { exclusionReason, OmiStore, parseOmiPayload } from "./src/omi.ts";
 import { startOmiWorker } from "./src/omi-worker.ts";
 import { timingSafeEqual } from "node:crypto";
 
@@ -20,7 +20,7 @@ function log(msg: string, extra: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 }
 
-export type OmiRoute = { store: OmiStore; kick: () => void; secret: string };
+export type OmiRoute = { store: OmiStore; kick: () => void; secret: string; backgroundKeepOwnerWords?: number };
 
 function secretMatches(expected: string, given: string) {
   const a = Buffer.from(expected, "utf8");
@@ -51,9 +51,11 @@ export async function handleOmi(req: Request, url: URL, omi: OmiRoute): Promise<
     log("omi duplicate ignored", { id: conv.id });
     return new Response("duplicate conversation");
   }
-  // Discarded conversations (Omi found no content) are kept only for dedupe, never distilled.
-  omi.store.saveConversation(conv.discarded ? { ...conv, noteId: "discarded" } : conv);
-  log("omi queued", { id: conv.id, segments: conv.segments.length, discarded: conv.discarded });
+  // Excluded conversations (Omi discarded them, or background) are kept only for dedupe: never
+  // distilled, and never merged, so ambient TV can't chain two real conversations into one note.
+  const excluded = exclusionReason(conv, omi.backgroundKeepOwnerWords ?? config.omiBackgroundKeepOwnerWords);
+  omi.store.saveConversation(excluded ? { ...conv, noteId: excluded } : conv);
+  log(excluded ? "omi excluded" : "omi queued", { id: conv.id, segments: conv.segments.length, salience: conv.salience, excluded });
   omi.kick();
   return Response.json({ ok: true, queued: conv.id });
 }

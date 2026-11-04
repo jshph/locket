@@ -33,6 +33,7 @@ export const config = {
   omiEffort: env.OMI_CLAUDE_EFFORT ?? "medium",
   omiMergeGapMs: Number(env.OMI_MERGE_GAP_MIN ?? 10) * 60_000,
   omiMinWords: Number(env.OMI_MIN_WORDS ?? 40),
+  omiBackgroundKeepOwnerWords: Number(env.OMI_BACKGROUND_KEEP_OWNER_WORDS ?? 60),
   omiMaxNotesPerDay: Number(env.OMI_MAX_NOTES_PER_DAY ?? 30),
 
   ntfyServer: env.NTFY_SERVER ?? "https://ntfy.sh",
