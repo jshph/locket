@@ -33,13 +33,15 @@ PORT = int(os.environ.get("OMI_ASR_PORT", "8791"))
 RETENTION_DAYS = float(os.environ.get("OMI_AUDIO_RETENTION_DAYS", "7"))
 # Voice thresholds (cosine similarity of WeSpeaker embeddings). OWNER_CLUSTER is now only the
 # learning guard's reference; owner turns are found per turn with OWNER_TURN. Starting points from synthetic
-# tests; check them against real pendant audio with scripts/omi-voice.ts.
+# tests, owner ones recalibrated 2026-11-04 on the real enrollment (own 4-9 s utterances
+# scored 0.80-0.82 against the voiceprint; the synthetic voices had run ~0.9).
 OWNER_CLUSTER = float(os.environ.get("OMI_OWNER_CLUSTER", "0.70"))
-OWNER_TURN = float(os.environ.get("OMI_OWNER_TURN", "0.82"))
-OWNER_LIVE = float(os.environ.get("OMI_OWNER_LIVE", "0.82"))
+OWNER_TURN = float(os.environ.get("OMI_OWNER_TURN", "0.72"))
+OWNER_LIVE = float(os.environ.get("OMI_OWNER_LIVE", "0.70"))
 PERSON_MATCH = float(os.environ.get("OMI_PERSON_MATCH", "0.70"))
 MARGIN = float(os.environ.get("OMI_VOICE_MARGIN", "0.05"))
 LIVE_SAME_SPEAKER = 0.70
+SAME_SPEAKER = float(os.environ.get("OMI_SAME_SPEAKER", "0.70"))  # one voice across utterances
 MAX_WINDOW_MS = 4 * 3600_000
 
 log = logging.getLogger("omi-asr")
@@ -177,46 +179,54 @@ class App:
     def _assign_speakers(self, audio: np.ndarray, turns: list, owner: np.ndarray | None) -> tuple[list[str], str | None]:
         """Speaker key per turn ("owner" or "c<n>") and how the owner was found.
 
-        With an enrolled owner, each turn long enough for a voiceprint is compared to it directly
-        (the owner is the one voice we know well), and the remaining turns are grouped by voice
-        among themselves; pyannote's clusters only place short turns. Without enrollment, pyannote's
-        clusters stand, and the clearly loudest one (nearest the pendant) is taken as the owner."""
+        Voices are grouped from per-utterance voiceprints, not pyannote's clusters: on real pendant
+        audio pyannote split one person talking alone into three clusters (their voiceprints
+        scored 0.71-0.90 against each other). With an enrolled owner, each utterance is first
+        compared to the owner directly. pyannote only places utterances too short to fingerprint.
+        Without enrollment, the only voice, or the clearly loudest one, is taken as the owner."""
         embs = [self.m.embed(audio[int(t.start * SR):int(t.end * SR)]) if t.end - t.start >= 1.0 else None for t in turns]
         keys: list[str | None] = [None] * len(turns)
+        cents: list[np.ndarray] = []
+        members: list[list[np.ndarray]] = []
+        order = sorted(range(len(turns)), key=lambda i: turns[i].end - turns[i].start, reverse=True)
+        for i in order:
+            e = embs[i]
+            if e is None:
+                continue
+            if owner is not None and cosine(e, owner) >= OWNER_TURN:
+                keys[i] = "owner"
+                continue
+            scores = [cosine(e, c) for c in cents]
+            k = int(np.argmax(scores)) if scores else -1
+            if k < 0 or scores[k] < SAME_SPEAKER:
+                cents.append(e)
+                members.append([e])
+                k = len(cents) - 1
+            else:
+                members[k].append(e)
+                c = np.mean(members[k], axis=0)
+                cents[k] = c / (np.linalg.norm(c) + 1e-9)
+            keys[i] = f"c{k}"
+        # Merge groups whose centroids ended up close (order effects in greedy grouping).
+        alias = list(range(len(cents)))
+        for x in range(len(cents)):
+            for y in range(x):
+                if alias[y] == y and cosine(cents[x], cents[y]) >= SAME_SPEAKER:
+                    alias[x] = y
+                    break
+        keys = [f"c{alias[int(k[1:])]}" if k and k.startswith("c") else k for k in keys]
+        # Short utterances: the most common key among fingerprinted ones in the same pyannote cluster.
+        by_diar: dict[int, dict[str, int]] = {}
+        for i, t in enumerate(turns):
+            if keys[i]:
+                by_diar.setdefault(t.speaker, {}).setdefault(keys[i], 0)
+                by_diar[t.speaker][keys[i]] += 1
+        for i, t in enumerate(turns):
+            if keys[i] is None:
+                votes = by_diar.get(t.speaker)
+                keys[i] = max(votes, key=votes.get) if votes else f"d{t.speaker}"
         if owner is not None:
-            cents: list[np.ndarray] = []
-            members: list[list[np.ndarray]] = []
-            order = sorted(range(len(turns)), key=lambda i: turns[i].end - turns[i].start, reverse=True)
-            for i in order:
-                e = embs[i]
-                if e is None:
-                    continue
-                if cosine(e, owner) >= OWNER_TURN:
-                    keys[i] = "owner"
-                    continue
-                scores = [cosine(e, c) for c in cents]
-                k = int(np.argmax(scores)) if scores else -1
-                if k < 0 or scores[k] < LIVE_SAME_SPEAKER:
-                    cents.append(e)
-                    members.append([e])
-                    k = len(cents) - 1
-                else:
-                    members[k].append(e)
-                    c = np.mean(members[k], axis=0)
-                    cents[k] = c / (np.linalg.norm(c) + 1e-9)
-                keys[i] = f"c{k}"
-            # Short turns: the most common key among long turns in the same pyannote cluster.
-            by_diar: dict[int, dict[str, int]] = {}
-            for i, t in enumerate(turns):
-                if keys[i]:
-                    by_diar.setdefault(t.speaker, {}).setdefault(keys[i], 0)
-                    by_diar[t.speaker][keys[i]] += 1
-            for i, t in enumerate(turns):
-                if keys[i] is None:
-                    votes = by_diar.get(t.speaker)
-                    keys[i] = max(votes, key=votes.get) if votes else f"d{t.speaker}"
             return keys, "voiceprint" if "owner" in keys else None
-        keys = [f"d{t.speaker}" for t in turns]
         rms: dict[str, list[float]] = {}
         for i, t in enumerate(turns):
             x = audio[int(t.start * SR):int(t.end * SR)]
@@ -308,15 +318,17 @@ class App:
     # --- 3. voiceprints ---
 
     def _dominant(self, audio: np.ndarray) -> tuple[np.ndarray | None, float, float, int]:
-        """Embedding of the speaker with most speech, their seconds, everyone else's, and count."""
-        segs = self.m.diarize(audio)
-        per: dict[int, float] = {}
-        for s, e, k in segs:
-            per[k] = per.get(k, 0) + e - s
+        """Embedding of the voice with most speech, its seconds, everyone else's, and voice count,
+        grouped per utterance the same way conversations are."""
+        turns = self._utterances(audio)
+        keys, _ = self._assign_speakers(audio, turns, None)
+        per: dict[str, float] = {}
+        for t, k in zip(turns, keys):
+            per[k] = per.get(k, 0) + t.end - t.start
         if not per:
             return None, 0, 0, 0
         top = max(per, key=per.get)
-        x = np.concatenate([audio[int(s * SR):int(e * SR)] for s, e, k in segs if k == top])
+        x = np.concatenate([audio[int(t.start * SR):int(t.end * SR)] for t, k in zip(turns, keys) if k == top])
         return self.m.embed(x[: 60 * SR]), per[top], sum(per.values()) - per[top], len(per)
 
     async def enroll(self, request: web.Request) -> web.Response:

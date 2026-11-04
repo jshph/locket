@@ -76,8 +76,9 @@ nothing else. No web, MCP, or other tools.
      learned as someone else. ntfy says "Learned voices: …".
    - `bun run scripts/omi-voice.ts list`, `delete <name>`.
 
-Voice thresholds (`OMI_OWNER_TURN` 0.82, `OMI_OWNER_LIVE` 0.82, `OMI_PERSON_MATCH` 0.70,
-`OMI_VOICE_MARGIN` 0.05, `OMI_DIARIZE_THRESHOLD` 0.45) were set on synthetic voices; revisit
+Voice thresholds (`OMI_OWNER_TURN` 0.72, `OMI_OWNER_LIVE` 0.70, `OMI_SAME_SPEAKER` 0.70, `OMI_PERSON_MATCH` 0.70,
+`OMI_VOICE_MARGIN` 0.05, `OMI_DIARIZE_THRESHOLD` 0.45) started on synthetic voices; the owner ones were
+recalibrated on the real enrollment (your 4–9 s utterances score 0.80–0.82). Revisit
 them after real use. Models (~660 MB, `asr/models/`, not in git) come from the sherpa-onnx
 releases; set up a new checkout with `cd asr && uv sync` and the download commands in AGENTS.md.
 
