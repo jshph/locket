@@ -31,17 +31,18 @@ from store import AudioStore, Voices, now_ms
 STATE = Path(os.environ.get("STATE_DIR", Path(__file__).parent.parent / "state")).resolve() / "omi"
 PORT = int(os.environ.get("OMI_ASR_PORT", "8791"))
 RETENTION_DAYS = float(os.environ.get("OMI_AUDIO_RETENTION_DAYS", "7"))
-# Voice thresholds (cosine similarity of WeSpeaker embeddings). OWNER_CLUSTER is now only the
-# learning guard's reference; owner turns are found per turn with OWNER_TURN. Starting points from synthetic
-# tests, owner ones recalibrated 2026-11-04 on the real enrollment (own 4-9 s utterances
-# scored 0.80-0.82 against the voiceprint; the synthetic voices had run ~0.9).
-OWNER_CLUSTER = float(os.environ.get("OMI_OWNER_CLUSTER", "0.70"))
-OWNER_TURN = float(os.environ.get("OMI_OWNER_TURN", "0.72"))
+# Voice thresholds: cosine similarity of WeSpeaker embeddings. The owner ones come from one real
+# enrollment on the pendant (the owner's own 4-9 s utterances scored 0.80-0.82 against the
+# voiceprint); different real voices usually score well below 0.6. Tune per user if needed.
+OWNER_TURN = float(os.environ.get("OMI_OWNER_TURN", "0.72"))  # an utterance is the owner's
 OWNER_LIVE = float(os.environ.get("OMI_OWNER_LIVE", "0.70"))
 PERSON_MATCH = float(os.environ.get("OMI_PERSON_MATCH", "0.70"))
 MARGIN = float(os.environ.get("OMI_VOICE_MARGIN", "0.05"))
-LIVE_SAME_SPEAKER = 0.70
 SAME_SPEAKER = float(os.environ.get("OMI_SAME_SPEAKER", "0.70"))  # one voice across utterances
+LIVE_SAME_SPEAKER = float(os.environ.get("OMI_LIVE_SAME_SPEAKER", "0.70"))
+# Learning refuses a voice this close to the owner's, so the owner can't become someone else.
+LEARN_OWNER_GUARD = float(os.environ.get("OMI_LEARN_OWNER_GUARD", "0.60"))
+LIVE_QUEUE_MAX = 200  # utterances awaiting transcription per live connection
 MAX_WINDOW_MS = 4 * 3600_000
 
 log = logging.getLogger("omi-asr")
@@ -57,11 +58,11 @@ def letters(i: int) -> str:
 
 
 class App:
-    def __init__(self, models: Models):
+    def __init__(self, models: Models, state: Path = STATE):
         self.m = models
-        self.store = AudioStore(STATE / "audio", RETENTION_DAYS)
-        self.voices = Voices(STATE / "voices.json")
-        self.runs = STATE / "asr-runs"
+        self.store = AudioStore(state / "audio", RETENTION_DAYS)
+        self.voices = Voices(state / "voices.json")
+        self.runs = state / "asr-runs"
         self.runs.mkdir(parents=True, exist_ok=True)
 
     # --- 1. live ---
@@ -71,43 +72,54 @@ class App:
         await ws.prepare(request)
         session = self.store.new_session()
         vad = self.m.new_vad()
-        owner = self.voices.centroids().get("me")
         centroids: list[np.ndarray] = []
         pending = np.zeros(0, dtype=np.float32)
-        queue: asyncio.Queue = asyncio.Queue()
-        log.info(json.dumps({"msg": "stt connected", "session": session.id, "owner_enrolled": owner is not None}))
+        queue: asyncio.Queue = asyncio.Queue(maxsize=LIVE_QUEUE_MAX + 1)
+        dropped = 0
+        log.info(json.dumps({"msg": "stt connected", "session": session.id,
+                             "owner_enrolled": self.voices.centroids().get("me") is not None}))
 
         async def send_results():
             while True:
                 item = await queue.get()
                 if item is None:
                     return
-                start, samples = item
-                text = await asyncio.to_thread(self.m.transcribe, samples)
-                if not text:
-                    continue
-                emb = await asyncio.to_thread(self.m.embed, samples)
-                is_user, speaker = False, "SPEAKER_01"
-                if emb is not None and owner is not None and cosine(emb, owner) >= OWNER_LIVE:
-                    is_user, speaker = True, "SPEAKER_00"
-                elif emb is not None:
-                    scores = [cosine(emb, c) for c in centroids]
-                    k = int(np.argmax(scores)) if scores else -1
-                    if k < 0 or scores[k] < LIVE_SAME_SPEAKER:
-                        centroids.append(emb)
-                        k = len(centroids) - 1
-                    speaker = f"SPEAKER_{k + 1:02d}"
-                seg = {"text": text, "speaker": speaker, "start": round(start, 2),
-                       "end": round(start + len(samples) / SR, 2), "is_user": is_user}
-                if not ws.closed:
-                    await ws.send_str(json.dumps({"segments": [seg]}))
+                try:
+                    await send_one(*item)
+                except Exception as e:  # one bad utterance must not end live transcription
+                    log.warning(json.dumps({"msg": "stt utterance failed", "session": session.id, "error": str(e)[:200]}))
+
+        async def send_one(start: float, samples: np.ndarray):
+            text = await asyncio.to_thread(self.m.transcribe, samples)
+            if not text:
+                return
+            emb = await asyncio.to_thread(self.m.embed, samples)
+            owner = self.voices.centroids().get("me")  # cached; a new enrollment applies at once
+            is_user, speaker = False, "SPEAKER_01"
+            if emb is not None and owner is not None and cosine(emb, owner) >= OWNER_LIVE:
+                is_user, speaker = True, "SPEAKER_00"
+            elif emb is not None:
+                scores = [cosine(emb, c) for c in centroids]
+                k = int(np.argmax(scores)) if scores else -1
+                if k < 0 or scores[k] < LIVE_SAME_SPEAKER:
+                    centroids.append(emb)
+                    k = len(centroids) - 1
+                speaker = f"SPEAKER_{k + 1:02d}"
+            seg = {"text": text, "speaker": speaker, "start": round(start, 2),
+                   "end": round(start + len(samples) / SR, 2), "is_user": is_user}
+            if not ws.closed:
+                await ws.send_str(json.dumps({"segments": [seg]}))
 
         sender = asyncio.create_task(send_results())
 
         def drain():
+            nonlocal dropped
             while not vad.empty():
                 seg = vad.front
-                queue.put_nowait((seg.start / SR, np.array(seg.samples, dtype=np.float32)))
+                if queue.qsize() < LIVE_QUEUE_MAX:
+                    queue.put_nowait((seg.start / SR, np.array(seg.samples, dtype=np.float32)))
+                else:  # transcription is far behind; the audio is still stored for the later pass
+                    dropped += 1
                 vad.pop()
 
         try:
@@ -138,7 +150,8 @@ class App:
             except (asyncio.TimeoutError, Exception):
                 sender.cancel()
             session.close()
-            log.info(json.dumps({"msg": "stt closed", "session": session.id, "seconds": round(session.bytes / (SR * 2), 1)}))
+            log.info(json.dumps({"msg": "stt closed", "session": session.id, "seconds": round(session.bytes / (SR * 2), 1),
+                                 "dropped_live": dropped}))
             if not ws.closed:
                 await ws.close()
         return ws
@@ -338,13 +351,13 @@ class App:
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         if body.get("wav"):
-            audio, sr = sf.read(body["wav"], dtype="float32", always_2d=True)
+            audio, sr = await asyncio.to_thread(sf.read, body["wav"], dtype="float32", always_2d=True)
             audio = audio.mean(axis=1)
             if sr != SR:
                 return web.json_response({"error": f"wav must be {SR} Hz mono"}, status=400)
             source = f"wav {Path(body['wav']).name}"
         else:
-            audio, _ = self.store.extract(int(body["start_ms"]), int(body["end_ms"]))
+            audio, _ = await asyncio.to_thread(self.store.extract, int(body["start_ms"]), int(body["end_ms"]))
             source = f"window {body['start_ms']}"
         emb, seconds, others, count = await asyncio.to_thread(self._dominant, audio)
         if emb is None or seconds < 15:
@@ -353,29 +366,32 @@ class App:
         return web.json_response({"name": name, "seconds": round(seconds, 1), "other_seconds": round(others, 1),
                                   "speakers_found": count, "samples": n})
 
-    async def learn(self, request: web.Request) -> web.Response:
-        """{name, run_id, cluster}: a confirmed speaker from a processed window joins [name]'s voiceprint."""
-        body = await request.json()
-        name, run_id, cluster = str(body.get("name", "")).strip(), str(body.get("run_id", "")), str(body.get("cluster"))
-        if not name or name == "me" or "/" in run_id:
-            return web.json_response({"error": "bad request"}, status=400)
+    def learn_cluster(self, name: str, run_id: str, cluster: str) -> tuple[int, dict]:
+        """A confirmed speaker from a processed window joins [name]'s voiceprint, unless it sounds
+        like the owner or already matches someone else."""
+        if not name or name == "me" or "/" in run_id or not run_id:
+            return 400, {"error": "bad request"}
         try:
             run = json.loads((self.runs / f"{run_id}.json").read_text())
         except FileNotFoundError:
-            return web.json_response({"error": "run expired"}, status=404)
+            return 404, {"error": "run expired"}
         c = run["clusters"].get(cluster)
         if not c or not c.get("emb") or c["seconds"] < 10:
-            return web.json_response({"error": "not enough speech from that speaker"}, status=422)
+            return 422, {"error": "not enough speech from that speaker"}
         emb = np.array(c["emb"], dtype=np.float32)
         # Never let the owner's voice (or a mix containing it) become someone else's voiceprint.
         owner = self.voices.centroids().get("me")
-        if c.get("is_user") or (owner is not None and cosine(emb, owner) >= OWNER_CLUSTER - 0.1):
-            return web.json_response({"error": "that speaker sounds like the owner; not learned"}, status=409)
+        if c.get("is_user") or (owner is not None and cosine(emb, owner) >= LEARN_OWNER_GUARD):
+            return 409, {"error": "that speaker sounds like the owner; not learned"}
         other = self.voices.best_match(emb, {"me", name}, PERSON_MATCH, 0)
         if other:
-            return web.json_response({"error": f"that voice already matches {other[0]}; not learned"}, status=409)
-        n = self.voices.add(name, emb, f"run {run_id}")
-        return web.json_response({"name": name, "samples": n})
+            return 409, {"error": f"that voice already matches {other[0]}; not learned"}
+        return 200, {"name": name, "samples": self.voices.add(name, emb, f"run {run_id}")}
+
+    async def learn(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        status, out = self.learn_cluster(str(body.get("name", "")).strip(), str(body.get("run_id", "")), str(body.get("cluster")))
+        return web.json_response(out, status=status)
 
     async def list_voices(self, _: web.Request) -> web.Response:
         return web.json_response({n: {"samples": len(v["embeddings"]), "updated_ms": v.get("updated_ms"),

@@ -5,10 +5,12 @@
 import type { Notifier } from "./notify.ts";
 import type { Router, RouterAction } from "./router.ts";
 import type { ActionState, Job, JobStore } from "./store.ts";
+import { log, startPoller } from "./util.ts";
 
 export type Effects = {
   writeNote: (transcript: string, title: string, recordedAt: number) => string;
-  createTask: (a: Extract<RouterAction, { tool: "create_reminder" }>) => Promise<string>;
+  /** [requestId] is stable per job action, so a retry after a lost response can't duplicate the task. */
+  createTask: (a: Extract<RouterAction, { tool: "create_reminder" }>, requestId: string) => Promise<string>;
   spawnThread: (prompt: string) => Promise<string>;
   createEvent: (a: Extract<RouterAction, { tool: "create_calendar_event" }>) => Promise<string>;
 };
@@ -34,16 +36,12 @@ const FAILED: Record<RouterAction["tool"], string> = {
   create_calendar_event: "create calendar event",
 };
 
-function log(msg: string, extra: Record<string, unknown> = {}) {
-  console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
-}
-
-async function runAction(a: ActionState, job: Job, effects: Effects): Promise<string> {
+async function runAction(a: ActionState, index: number, job: Job, effects: Effects): Promise<string> {
   switch (a.tool) {
     case "create_note":
       return effects.writeNote(job.transcript, a.title, job.recordedAt);
     case "create_reminder":
-      return effects.createTask(a);
+      return effects.createTask(a, `${job.id}:${index}`);
     case "start_thread":
       return effects.spawnThread(job.transcript);
     case "create_calendar_event":
@@ -79,10 +77,10 @@ export async function processJob(job: Job, deps: Deps): Promise<void> {
   }
 
   let retryAfter: number | null = null;
-  for (const a of job.plan) {
+  for (const [index, a] of job.plan.entries()) {
     if (a.status !== "pending") continue;
     try {
-      a.result = await runAction(a, job, deps.effects);
+      a.result = await runAction(a, index, job, deps.effects);
       a.status = "done";
       log("action done", { id: job.id, tool: a.tool, result: a.result });
     } catch (e) {
@@ -139,34 +137,14 @@ export function summarize(job: Job, nowMs: number): [string, string, { urgent?: 
  * in progress finish and starts no new one, so a restart never cuts an action in half.
  */
 export function startWorker(deps: Deps, pollMs = 5_000) {
-  let current: Promise<void> | null = null;
-  let stopping = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const run = async () => {
+  return startPoller(async (stopping) => {
     for (const job of deps.store.due((deps.now ?? Date.now)())) {
-      if (stopping) return;
+      if (stopping()) return;
       try {
         await processJob(job, deps);
       } catch (e) {
         log("job crashed", { id: job.id, error: String(e) });
       }
     }
-  };
-  const tick = () => {
-    if (current || stopping) return;
-    clearTimeout(timer);
-    current = run().finally(() => {
-      current = null;
-      if (!stopping) timer = setTimeout(tick, pollMs);
-    });
-  };
-  timer = setTimeout(tick, 0);
-  return {
-    kick: tick,
-    stop: async () => {
-      stopping = true;
-      clearTimeout(timer);
-      await current;
-    },
-  };
+  }, pollMs);
 }

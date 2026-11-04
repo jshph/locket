@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.ts";
+import { fetchWithTimeout } from "./util.ts";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -59,7 +60,7 @@ export async function finishGoogleAuth(url: URL, nowMs = Date.now()): Promise<Re
   unlinkSync(pendingPath());
   const error = url.searchParams.get("error");
   if (error) return page(`Google sign-in failed: ${error.replace(/[<>&"]/g, "")}`, 400);
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -83,7 +84,7 @@ let accessCache: { token: string; expiresAt: number } | null = null;
 async function accessToken(): Promise<string> {
   if (accessCache && Date.now() < accessCache.expiresAt - 60_000) return accessCache.token;
   const { refresh_token } = JSON.parse(readFileSync(tokenPath(), "utf8"));
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -122,7 +123,7 @@ export async function createCalendarEvent(a: {
   };
   if (a.location) body.location = a.location;
   if (a.description) body.description = a.description;
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(config.googleCalendarId)}/events`,
     { method: "POST", headers: { Authorization: `Bearer ${await accessToken()}`, "content-type": "application/json" }, body: JSON.stringify(body) },
   );

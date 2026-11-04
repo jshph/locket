@@ -96,25 +96,5 @@ class Turn:
     text: str = ""
 
 
-def merge_turns(segs: list[tuple[float, float, int]], gap: float = 0.8, max_len: float = MAX_ASR_SECONDS) -> list[Turn]:
-    """Joins consecutive same-speaker segments separated by short gaps, capped for the ASR."""
-    out: list[Turn] = []
-    for start, end, spk in segs:
-        last = out[-1] if out else None
-        if last and last.speaker == spk and start - last.end <= gap and end - last.start <= max_len:
-            last.end = max(last.end, end)
-        else:
-            out.append(Turn(start, end, spk))
-    # Split anything still longer than the ASR window.
-    final: list[Turn] = []
-    for t in out:
-        s = t.start
-        while t.end - s > max_len:
-            final.append(Turn(s, s + max_len, t.speaker))
-            s += max_len
-        final.append(Turn(s, t.end, t.speaker))
-    return final
-
-
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))

@@ -10,6 +10,7 @@ import { localStamp } from "./actions.ts";
 import { childEnv, config } from "./config.ts";
 import { renderTranscript, speakerLabel, wordCount, type OmiConversation } from "./omi.ts";
 import { MAX_PEOPLE, type GuardContext } from "./omi-guard.ts";
+import { runClaude } from "./util.ts";
 
 const SKILL_DIR = join(import.meta.dir, "..", "reference", "margins-skill");
 const TEMPLATES = ["1on1-idea-exchange.md", "discovery-call.md", "group-conversation.md", "design-scoping-session.md", "talk-reflection.md"];
@@ -52,10 +53,10 @@ export const resultSchema = {
   },
 };
 
-export function systemPrompt(): string {
+export function distillSystemPrompt(): string {
   const core = readFileSync(join(SKILL_DIR, "distillation-core.md"), "utf8");
   const templates = TEMPLATES.map((t) => `### templates/${t}\n\n${readFileSync(join(SKILL_DIR, "templates", t), "utf8").trim()}`).join("\n\n");
-  return `You are the Margins distiller for Sam Rivera's Obsidian vault at ${config.vaultDir}. You run unattended on his home server: nobody will answer questions or approve a draft. Turn one Omi wearable capture (one or more consecutive conversations, diarized by Omi) into one connected note, save it, and report what you did.
+  return `You are the Margins distiller for ${config.ownerName}'s Obsidian vault at ${config.vaultDir}. You run unattended on their home server: nobody will answer questions or approve a draft. Turn one Omi wearable capture (one or more consecutive conversations, diarized by Omi) into one connected note, save it, and report what you did.
 
 # How this run differs from an interactive Margins session
 
@@ -66,17 +67,17 @@ export function systemPrompt(): string {
 
 # Decide first whether there is a note
 
-Write nothing and return status "skipped" with a reason when the capture has no substance worth keeping: background TV/video/music, unintelligible fragments, only pleasantries or logistics (ordering food, directions), or a few disconnected sentences. When in doubt between a thin note and none, prefer none. Real thinking out loud by Sam alone counts as substance.
+Write nothing and return status "skipped" with a reason when the capture has no substance worth keeping: background TV/video/music, unintelligible fragments, only pleasantries or logistics (ordering food, directions), or a few disconnected sentences. When in doubt between a thin note and none, prefer none. Real thinking out loud by ${config.ownerName} alone counts as substance.
 
 # People (this matters)
 
-"Me" in the transcript is Sam Rivera, the vault owner. Never add him to people or create a note for him.
-Other speakers are labeled with the name Sam assigned to that voice in Omi (trust it as identified, though it may be a first name only) or "Speaker A"/"Speaker B" (not an identity). Speaker letters restart in each conversation section, so the same person can have different letters in different sections. Diarization can split one person into two labels or merge two people; read the words, not just the labels.
-The request may say a voice "resembles" a known person: the home server compared voiceprints. Treat that as a strong hint that still needs the transcript to agree (topic, names used, what they would know); a resemblance alone is "voice_match" evidence. If the request says "Me" was found by loudness because Sam's voice isn't enrolled, double-check which lines are his from what is said.
+"Me" in the transcript is ${config.ownerName}, the vault owner. Never add them to people or create a note for them.
+Other speakers are labeled with the name ${config.ownerName} assigned to that voice in Omi (trust it as identified, though it may be a first name only) or "Speaker A"/"Speaker B" (not an identity). Speaker letters restart in each conversation section, so the same person can have different letters in different sections. Diarization can split one person into two labels or merge two people; read the words, not just the labels.
+The request may say a voice "resembles" a known person: the home server compared voiceprints. Treat that as a strong hint that still needs the transcript to agree (topic, names used, what they would know); a resemblance alone is "voice_match" evidence. If the request says "Me" was found by loudness because ${config.ownerName}'s voice isn't enrolled, double-check which lines are theirs from what is said.
 
 1. Work out who actually participated: an Omi-assigned name, a self-introduction, or unambiguous direct address ("thanks, Mira"). Someone merely mentioned is not a participant.
 2. For every participant and every consequential person mentioned, look them up in ${config.vaultDir}/people/ before writing: Glob \`people/*.md\` and match full name, first name, nickname, and likely speech-to-text misspellings, case-insensitively. Use \`margins recall\` and Grep over recent inbox notes to confirm which person it is when there are several candidates (e.g. two Danas), using what the conversation is about.
-3. Use the exact existing filename (without .md) as the wikilink: \`[[Dana Okafor]]\`, \`[[ajay]]\`. Confirmed participants go in the \`people\` frontmatter.
+3. Use the exact existing filename (without .md) as the wikilink: \`[[Dana Okafor]]\`, \`[[kim]]\`. Confirmed participants go in the \`people\` frontmatter.
 4. If you cannot tell who someone is, keep a neutral label ("Speaker 2", or "Dana [unclear which Dana]") in the body. Never guess a name.
 5. Create a person note only for a confirmed participant with no existing note, with a full name (or the name they clearly go by): \`${config.vaultDir}/people/<Name>.md\` containing just \`# <Name>\` and a line linking the conversation note, e.g. \`Met in [[<note filename without .md>]]\`. At most ${MAX_PEOPLE} per run. Never for mentioned-only people, unnamed speakers, or names you are unsure the transcript heard correctly. Write the conversation note first so the link resolves.
 
@@ -94,7 +95,7 @@ tags:
 ---
 \`\`\`
 
-Leave \`people:\` or \`tags:\` empty rather than inventing values. In the body's dateline, name participants (e.g. "Sam Rivera and [[Dana Okafor]]"), include the local time span and duration. Do not paste the raw transcript; quote only the phrases that matter.
+Leave \`people:\` or \`tags:\` empty rather than inventing values. In the body's dateline, name participants (e.g. "${config.ownerName} and [[Dana Okafor]]"), include the local time span and duration. Do not paste the raw transcript; quote only the phrases that matter.
 
 When finished, reply with the structured result: status, absolute note_path, title, people_created, people_linked, speaker_identities (each labeled speaker you identified, with honest evidence: omi_name, self_introduction, direct_address, voice_match, or context), and a one-sentence reason. Speaker identities are used to teach the server voices, so never claim self_introduction or direct_address unless the transcript shows it for that exact label.
 
@@ -186,51 +187,47 @@ export const claudeDistiller: Distiller = async (convs, noteId) => {
   const hook = `${process.execPath} ${resolve(import.meta.dir, "..", "scripts", "omi-guard.ts")}`;
   const settings = { hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: hook, timeout: 10 }] }] } };
 
-  const proc = Bun.spawn([
-    config.claudeBin, "-p",
-    "--output-format", "json",
-    "--json-schema", JSON.stringify(resultSchema),
-    "--system-prompt", systemPrompt(),
-    "--tools", "Read,Glob,Grep,Bash,Write,Edit",
-    "--permission-mode", "dontAsk",
-    "--allowedTools",
-    `Read(/${vault}/**)`,
-    `Edit(/${ctx.inboxDir}/*.md)`,
-    `Edit(/${ctx.peopleDir}/*.md)`,
-    `Bash(margins --workspace ${config.marginsWorkspace} recall:*)`,
-    "--add-dir", vault,
-    "--settings", JSON.stringify(settings),
-    "--strict-mcp-config",
-    "--setting-sources", "",
-    "--disable-slash-commands",
-    "--no-session-persistence",
-    "--model", config.claudeModel,
-    "--effort", config.omiEffort,
-  ], {
-    cwd,
-    env: { ...childEnv(), OMI_GUARD_STATE: guardState },
-    stdin: new TextEncoder().encode(userMessage(convs)),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const timer = setTimeout(() => proc.kill(), DISTILL_TIMEOUT_MS);
-  let out: string, err: string, code: number;
+  let so: any = {};
+  let failure: (Error & { stdout?: string }) | null = null;
+  let stdout = "";
   try {
-    [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  } finally {
-    clearTimeout(timer);
+    const r = await runClaude({
+      bin: config.claudeBin,
+      args: [
+        "--json-schema", JSON.stringify(resultSchema),
+        "--system-prompt", distillSystemPrompt(),
+        "--tools", "Read,Glob,Grep,Bash,Write,Edit",
+        "--permission-mode", "dontAsk",
+        "--allowedTools",
+        `Read(/${vault}/**)`,
+        `Edit(/${ctx.inboxDir}/*.md)`,
+        `Edit(/${ctx.peopleDir}/*.md)`,
+        `Bash(margins --workspace ${config.marginsWorkspace} recall:*)`,
+        "--add-dir", vault,
+        "--settings", JSON.stringify(settings),
+        "--strict-mcp-config",
+        "--setting-sources", "",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--model", config.claudeModel,
+        "--effort", config.omiEffort,
+      ],
+      stdin: userMessage(convs), cwd, env: { ...childEnv(), OMI_GUARD_STATE: guardState }, timeoutMs: DISTILL_TIMEOUT_MS,
+    });
+    so = r.result.structured_output ?? {};
+    stdout = r.stdout;
+  } catch (e) {
+    failure = e as Error & { stdout?: string };
+    stdout = failure.stdout ?? "";
   }
+  writeFileSync(join(runDir, "result.json"), stdout);
   // What actually exists on disk decides the outcome, not what the model says it did.
   const created = (JSON.parse(readFileSync(guardState, "utf8")) as GuardContext).created.filter((p) => existsSync(p));
   const note = created.find((p) => p.startsWith(`${ctx.inboxDir}/`));
-  const people = created.filter((p) => p.startsWith(`${ctx.peopleDir}/`)).map((p) => basename(p, ".md"));
-  writeFileSync(join(runDir, "result.json"), out);
-
-  if (code !== 0) throw new Error(`claude exited ${code}: ${(err || out).slice(0, 300)}`);
-  const result = JSON.parse(out);
-  if (result.is_error) throw new Error(`claude error ${result.api_error_status ?? ""}: ${String(result.result ?? "").slice(0, 300)}`);
-  const so = result.structured_output ?? {};
+  const peopleFiles = created.filter((p) => p.startsWith(`${ctx.peopleDir}/`));
+  const people = peopleFiles.map((p) => basename(p, ".md"));
   if (note) {
+    // Saved even if the run then failed (e.g. timed out after writing): keep it, don't redo it.
     const title = typeof so.title === "string" && so.title.trim() ? so.title.trim() : basename(note, ".md").slice(ctx.notePrefix.length);
     const identities: SpeakerIdentity[] = Array.isArray(so.speaker_identities)
       ? so.speaker_identities.filter((x: any) => x && typeof x.label === "string" && typeof x.person === "string")
@@ -238,7 +235,11 @@ export const claudeDistiller: Distiller = async (convs, noteId) => {
       : [];
     return { status: "written", notePath: note.slice(vault.length + 1), title, peopleCreated: people, identities };
   }
-  if (people.length) throw new Error(`created person notes (${people.join(", ")}) but no conversation note`);
+  // No note: person notes this run created would link to nothing. They are new files only this
+  // run wrote, so remove them before the retry.
+  for (const p of peopleFiles) rmSync(p, { force: true });
+  if (failure) throw failure;
+  if (people.length) throw new Error(`created person notes (${people.join(", ")}, removed) but no conversation note`);
   if (so.status === "skipped") return { status: "skipped", reason: String(so.reason ?? "no reason given").slice(0, 300) };
   throw new Error(`no note was written (model said: ${String(so.status)}: ${String(so.reason ?? "").slice(0, 200)})`);
 };

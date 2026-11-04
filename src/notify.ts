@@ -2,13 +2,14 @@
 // full transcript. Disabled (logged only) when NTFY_TOPIC is unset.
 
 import { config } from "./config.ts";
+import { fetchWithTimeout, log } from "./util.ts";
 
 export type Notifier = (title: string, message: string, opts?: { urgent?: boolean; quiet?: boolean }) => Promise<void>;
 
 export const ntfyNotifier: Notifier = async (title, message, opts = {}) => {
   if (!config.ntfyTopic) return;
   try {
-    const res = await fetch(`${config.ntfyServer}/${encodeURIComponent(config.ntfyTopic)}`, {
+    const res = await fetchWithTimeout(`${config.ntfyServer}/${encodeURIComponent(config.ntfyTopic)}`, {
       method: "POST",
       headers: {
         Title: title,
@@ -16,9 +17,9 @@ export const ntfyNotifier: Notifier = async (title, message, opts = {}) => {
         Tags: opts.urgent ? "warning" : opts.quiet ? "zzz" : "white_check_mark",
       },
       body: message,
-    });
-    if (!res.ok) console.log(JSON.stringify({ t: new Date().toISOString(), msg: "ntfy failed", status: res.status }));
+    }, 10_000);
+    if (!res.ok) log("ntfy failed", { status: res.status });
   } catch (e) {
-    console.log(JSON.stringify({ t: new Date().toISOString(), msg: "ntfy failed", error: String(e) }));
+    log("ntfy failed", { error: String(e) });
   }
 };

@@ -8,7 +8,7 @@ kill -TERM "$pid"
 for _ in $(seq 1 60); do
   sleep 1
   new="$(systemctl show -p MainPID --value index-agent)"
-  if [ "$new" != "0" ] && [ "$new" != "$pid" ] && curl -sf http://127.0.0.1:8790/healthz >/dev/null; then
+  if [ "$new" != "0" ] && [ "$new" != "$pid" ] && curl -sf "http://127.0.0.1:${PORT:-8790}/healthz" >/dev/null; then
     echo "index-agent restarted (pid $pid -> $new)"
     exit 0
   fi

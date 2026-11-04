@@ -9,6 +9,7 @@ import { childEnv, config } from "./config.ts";
 import { mkdirSync } from "node:fs";
 import { calendarConfigured } from "./google.ts";
 import { join } from "node:path";
+import { runClaude } from "./util.ts";
 
 export type RouterAction =
   | { tool: "create_note"; title: string }
@@ -39,7 +40,7 @@ const CALENDAR_ACTION = `- create_calendar_event: ONLY when the user literally s
 const CALENDAR_RULE_ON = `- The words "schedule", "create", "book", "meeting", "appointment" or "time" on their own NEVER mean a calendar event; "schedule time with X" or "book an appointment" are reminders or notes. "Remind me" or a to-do is a reminder, never an event. On the edge between a reminder and an event, prefer the reminder. If an event's time is vague, ambiguous or missing, create a note instead.`;
 const CALENDAR_RULE_OFF = `- Calendar events are not available. If the user asks to add an event to their calendar with a clear spoken time, create a reminder with that time instead. "Schedule time with X", "book", "meeting" or "appointment" without a time are reminders or notes, never invent a time.`;
 
-export function systemPrompt(calendar: boolean): string {
+export function routerSystemPrompt(calendar: boolean): string {
   return PROMPT_HEAD
     .replace("{{CALENDAR_ACTION}}", calendar ? CALENDAR_ACTION : "")
     .replace("{{CALENDAR_RULE}}", calendar ? CALENDAR_RULE_ON : CALENDAR_RULE_OFF);
@@ -165,37 +166,21 @@ export const claudeRouter: Router = async (transcript, recordedAt) => {
   const calendar = calendarConfigured();
   const cwd = join(config.stateDir, "claude-cwd");
   mkdirSync(cwd, { recursive: true });
-  const proc = Bun.spawn([
-    config.claudeBin, "-p",
-    "--output-format", "json",
-    "--json-schema", JSON.stringify(actionsSchema(calendar)),
-    "--system-prompt", systemPrompt(calendar),
-    "--tools", "",
-    "--strict-mcp-config",
-    "--setting-sources", "",
-    "--disable-slash-commands",
-    "--no-session-persistence",
-    "--model", config.claudeModel,
-    "--effort", config.claudeEffort,
-  ], {
-    cwd,
-    env: childEnv(),
-    stdin: new TextEncoder().encode(routerUserMessage(transcript, recordedAt, config.localTz)),
-    stdout: "pipe",
-    stderr: "pipe",
+  const { result } = await runClaude({
+    bin: config.claudeBin,
+    args: [
+      "--json-schema", JSON.stringify(actionsSchema(calendar)),
+      "--system-prompt", routerSystemPrompt(calendar),
+      "--tools", "",
+      "--strict-mcp-config",
+      "--setting-sources", "",
+      "--disable-slash-commands",
+      "--no-session-persistence",
+      "--model", config.claudeModel,
+      "--effort", config.claudeEffort,
+    ],
+    stdin: routerUserMessage(transcript, recordedAt, config.localTz),
+    cwd, env: childEnv(), timeoutMs: ROUTER_TIMEOUT_MS,
   });
-  const timer = setTimeout(() => proc.kill(), ROUTER_TIMEOUT_MS);
-  try {
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
-    ]);
-    if (code !== 0) throw new Error(`claude exited ${code}: ${(err || out).slice(0, 300)}`);
-    const result = JSON.parse(out);
-    if (result.is_error) {
-      throw new Error(`claude error ${result.api_error_status ?? ""}: ${String(result.result ?? "").slice(0, 300)}`);
-    }
-    return applyCalendarGuard(parseActions(result.structured_output), transcript);
-  } finally {
-    clearTimeout(timer);
-  }
+  return applyCalendarGuard(parseActions(result.structured_output), transcript);
 };

@@ -40,9 +40,20 @@ export function decide(toolName: string, input: Record<string, any>, ctx: GuardC
     case "Glob":
     case "Grep": {
       const raw = input.file_path ?? input.path;
-      if (raw === undefined) return { allow: true }; // defaults to the empty working directory
-      const p = resolve(String(raw));
-      return inside(ctx.vaultDir, p) ? { allow: true } : deny(`Reading outside the vault is not allowed: ${p}`);
+      if (raw !== undefined && !inside(ctx.vaultDir, resolve(String(raw)))) {
+        return deny(`Reading outside the vault is not allowed: ${resolve(String(raw))}`);
+      }
+      // Search patterns can carry their own location: an absolute or ~ pattern must stay in the
+      // vault, and no pattern may climb out with "..".
+      for (const pat of [input.pattern, input.glob].filter((x) => typeof x === "string") as string[]) {
+        if (toolName === "Grep" && pat === input.pattern) continue; // Grep's pattern is a regex, not a path
+        if (/(^|[\\/])\.\.([\\/]|$)/.test(pat)) return deny("Patterns may not contain '..'.");
+        if (pat.startsWith("~")) return deny("Patterns must be inside the vault.");
+        if (pat.startsWith("/") && !inside(ctx.vaultDir, resolve(pat.split(/[*?[{]/)[0] || "/"))) {
+          return deny(`Patterns must be inside the vault: ${pat}`);
+        }
+      }
+      return { allow: true }; // a relative pattern with no path searches the empty working directory
     }
     case "Bash": {
       const cmd = String(input.command ?? "").trim();

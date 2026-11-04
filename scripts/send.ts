@@ -1,12 +1,13 @@
 // Sends one signed delivery exactly like the ring app does, to exercise the running service end
 // to end. This DOES create real notes/tasks/events/threads: clean them up afterwards (AGENTS.md).
 // Usage: bun run scripts/send.ts "<transcript>" [--url http://127.0.0.1:8790/index] [--test]
+import { config } from "../src/config.ts";
 import { sign, signedBytes } from "../src/webhook.ts";
 
 const args = process.argv.slice(2);
 const take = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args.splice(i, 2)[1] : undefined; };
 const isTest = args.includes("--test") && (args.splice(args.indexOf("--test"), 1), true);
-const url = take("--url") ?? "https://your-host.your-tailnet.ts.net:10000/index";
+const url = take("--url") ?? (config.publicUrl ? `${config.publicUrl}/index` : `http://127.0.0.1:${config.port}/index`);
 const transcript = args.join(" ") || "Index webhook test event";
 
 const form = new FormData();

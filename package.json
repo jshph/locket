@@ -1,0 +1,18 @@
+{
+  "name": "index-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted capture agent: Pebble Index 01 ring and Omi pendant recordings become vault notes, tasks and threads, with local transcription and speaker identification.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "start": "bun run server.ts",
+    "test": "bun test && cd asr && .venv/bin/python -m pytest -q",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun run test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.6.0"
+  }
+}

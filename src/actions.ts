@@ -3,6 +3,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { childEnv, config } from "./config.ts";
+import { fetchWithTimeout } from "./util.ts";
 
 /** Local calendar parts for [ms] in [tz], e.g. date "2026-11-03", stamp "2026-11-03-00-34-12". */
 export function localStamp(ms: number, tz: string) {
@@ -52,11 +53,12 @@ export function writeNote(transcript: string, title: string, recordedAt: number,
 const TODOIST_API = "https://api.todoist.com/api/v1";
 let projectCache: { at: number; byName: Map<string, string> } | null = null;
 
-async function todoist(method: string, path: string, body?: unknown) {
-  const res = await fetch(TODOIST_API + path, {
-    method,
-    headers: { Authorization: `Bearer ${config.todoistToken}`, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+async function todoist(method: string, path: string, body?: unknown, requestId?: string) {
+  const headers: Record<string, string> = { Authorization: `Bearer ${config.todoistToken}`, "Content-Type": "application/json" };
+  // Todoist ignores a repeated X-Request-Id, so a retry after a lost response can't duplicate.
+  if (requestId) headers["X-Request-Id"] = requestId;
+  const res = await fetchWithTimeout(TODOIST_API + path, {
+    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
   return { ok: res.ok, status: res.status, json: text ? safeJson(text) : null, text };
@@ -81,7 +83,7 @@ async function projectIdFor(list: string): Promise<string | undefined> {
   return projectCache.byName.get(key) ?? projectCache.byName.get(`${key} list`);
 }
 
-export async function createTodoistTask(a: { title: string; due?: string; lead_hours?: number; list?: string }): Promise<string> {
+export async function createTodoistTask(a: { title: string; due?: string; lead_hours?: number; list?: string }, requestId?: string): Promise<string> {
   if (!config.todoistToken) throw new Error("TODOIST_API_TOKEN is not set");
   const task: Record<string, unknown> = { content: a.title };
   const projectId = a.list ? await projectIdFor(a.list) : undefined;
@@ -90,14 +92,14 @@ export async function createTodoistTask(a: { title: string; due?: string; lead_h
     task.due_string = a.due;
     task.due_lang = "en";
   }
-  let res = await todoist("POST", "/tasks", task);
+  let res = await todoist("POST", "/tasks", task, requestId);
   let dueAccepted = Boolean(a.due) && res.ok;
   if (!res.ok && res.status === 400 && a.due) {
     // Todoist couldn't parse the date: keep the task and carry the spoken time in its description.
     delete task.due_string;
     delete task.due_lang;
     task.description = `Due (unparsed): ${a.due}`;
-    res = await todoist("POST", "/tasks", task);
+    res = await todoist("POST", "/tasks", task, requestId && `${requestId}:undated`);
   }
   if (!res.ok) throw new Error(`Todoist HTTP ${res.status}: ${res.text.slice(0, 200)}`);
   const id = res.json?.id;
@@ -122,6 +124,7 @@ const recentSpawns: number[] = [];
 
 /** Starts a bb thread with [prompt] on stdin, so it reaches the agent byte-for-byte. */
 export async function spawnThread(prompt: string): Promise<string> {
+  if (!config.bbProject || !config.bbEnvironment) throw new Error("BB_PROJECT / BB_ENVIRONMENT are not set");
   const hourAgo = Date.now() - 3600_000;
   while (recentSpawns.length && recentSpawns[0] < hourAgo) recentSpawns.shift();
   if (recentSpawns.length >= config.maxSpawnsPerHour) throw new Error("thread spawn rate limit reached");
@@ -131,9 +134,10 @@ export async function spawnThread(prompt: string): Promise<string> {
       "--permission-mode", config.bbPermissionMode, "--prompt-file", "-", "--json"],
     { env: childEnv(), stdin: new TextEncoder().encode(prompt), stdout: "pipe", stderr: "pipe" },
   );
+  const timer = setTimeout(() => proc.kill(), 60_000);
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
-  ]);
+  ]).finally(() => clearTimeout(timer));
   if (code !== 0) throw new Error(`bb exited ${code}: ${(err || out).slice(0, 300)}`);
   const id = JSON.parse(out)?.id;
   if (!id) throw new Error(`bb returned no thread id: ${out.slice(0, 200)}`);

@@ -138,6 +138,7 @@ class AudioStore:
 class Voices:
     def __init__(self, path: Path):
         self.path = path
+        self._cache: tuple[tuple[int, int, int], dict[str, np.ndarray]] | None = None
 
     def load(self) -> dict[str, dict]:
         try:
@@ -149,6 +150,7 @@ class Voices:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"version": 1, "voices": voices}))
         os.replace(tmp, self.path)
+        self._cache = None
 
     def add(self, name: str, emb: np.ndarray, source: str, replace: bool = False) -> int:
         voices = self.load()
@@ -170,11 +172,21 @@ class Voices:
         return True
 
     def centroids(self) -> dict[str, np.ndarray]:
+        """Normalized mean voiceprint per name, re-read whenever voices.json changes."""
+        try:
+            st = self.path.stat()
+        except FileNotFoundError:
+            return {}
+        # Every save is a new file (tmp + rename), so the inode changes even within one mtime tick.
+        mtime = (st.st_ino, st.st_mtime_ns, st.st_size)
+        if self._cache and self._cache[0] == mtime:
+            return self._cache[1]
         out = {}
         for name, v in self.load().items():
             if v.get("embeddings"):
                 c = np.mean(np.array(v["embeddings"], dtype=np.float32), axis=0)
                 out[name] = c / (np.linalg.norm(c) + 1e-9)
+        self._cache = (mtime, out)
         return out
 
     def best_match(self, emb: np.ndarray, exclude: set[str], min_score: float, margin: float) -> tuple[str, float] | None:

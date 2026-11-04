@@ -4,8 +4,8 @@
 // after 100 consecutive failures, so the endpoint acknowledges as soon as the JSON is saved and
 // all distillation problems stay on this side.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { JsonDirStore, words } from "./util.ts";
 
 export type OmiSegment = {
   text: string;
@@ -111,8 +111,7 @@ export function parseOmiPayload(body: unknown, receivedAt: number): OmiConversat
 }
 
 export function wordCount(c: OmiConversation, onlyOwner = false): number {
-  return c.segments.filter((s) => !onlyOwner || s.isUser)
-    .reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0);
+  return c.segments.filter((s) => !onlyOwner || s.isUser).reduce((n, s) => n + words(s.text), 0);
 }
 
 /**
@@ -189,80 +188,40 @@ const KEEP_MS = 30 * 24 * 3600_000;
 
 /** state/omi/conversations/<id>.json (the raw transcript, kept out of the vault) and notes/<id>.json. */
 export class OmiStore {
-  private convDir: string;
-  private noteDir: string;
+  private convs: JsonDirStore<OmiConversation>;
+  private noteJobs: JsonDirStore<NoteJob>;
 
   constructor(stateDir: string) {
-    this.convDir = join(stateDir, "omi", "conversations");
-    this.noteDir = join(stateDir, "omi", "notes");
-    mkdirSync(this.convDir, { recursive: true });
-    mkdirSync(this.noteDir, { recursive: true });
-  }
-
-  private file(dir: string, id: string) {
-    return join(dir, `${id.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
-  }
-
-  private write(p: string, value: unknown) {
-    writeFileSync(`${p}.tmp`, JSON.stringify(value, null, 2));
-    renameSync(`${p}.tmp`, p);
-  }
-
-  private readAll<T>(dir: string): T[] {
-    return readdirSync(dir).filter((f) => f.endsWith(".json")).flatMap((f) => {
-      try {
-        return [JSON.parse(readFileSync(join(dir, f), "utf8")) as T];
-      } catch {
-        return [];
-      }
-    });
+    this.convs = new JsonDirStore(join(stateDir, "omi", "conversations"));
+    this.noteJobs = new JsonDirStore(join(stateDir, "omi", "notes"));
   }
 
   hasConversation(id: string) {
-    return existsSync(this.file(this.convDir, id));
+    return this.convs.has(id);
   }
   saveConversation(c: OmiConversation) {
-    this.write(this.file(this.convDir, c.id), c);
+    this.convs.save(c.id, c);
   }
   conversations(): OmiConversation[] {
-    return this.readAll<OmiConversation>(this.convDir);
+    return this.convs.all();
   }
   conversation(id: string): OmiConversation | null {
-    try {
-      return JSON.parse(readFileSync(this.file(this.convDir, id), "utf8"));
-    } catch {
-      return null;
-    }
+    return this.convs.get(id);
   }
 
   saveNote(n: NoteJob) {
-    this.write(this.file(this.noteDir, n.id), n);
+    this.noteJobs.save(n.id, n);
   }
   notes(): NoteJob[] {
-    return this.readAll<NoteJob>(this.noteDir);
+    return this.noteJobs.all();
   }
   note(id: string): NoteJob | null {
-    try {
-      return JSON.parse(readFileSync(this.file(this.noteDir, id), "utf8"));
-    } catch {
-      return null;
-    }
+    return this.noteJobs.get(id);
   }
 
-  /** Drops transcripts and finished note jobs after 30 days. */
+  /** Drops transcripts and finished note jobs after 30 days (never ones still waiting). */
   prune(nowMs: number) {
-    for (const dir of [this.convDir, this.noteDir]) {
-      for (const f of readdirSync(dir)) {
-        const p = join(dir, f);
-        try {
-          if (nowMs - statSync(p).mtimeMs <= KEEP_MS) continue;
-          if (dir === this.noteDir && JSON.parse(readFileSync(p, "utf8")).status === "pending") continue;
-          if (dir === this.convDir && !JSON.parse(readFileSync(p, "utf8")).noteId) continue;
-          unlinkSync(p);
-        } catch {
-          // Ignore unreadable or concurrently replaced files.
-        }
-      }
-    }
+    this.convs.prune(nowMs, KEEP_MS, (c) => Boolean(c.noteId));
+    this.noteJobs.prune(nowMs, KEEP_MS, (n) => n.status !== "pending");
   }
 }

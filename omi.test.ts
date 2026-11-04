@@ -9,6 +9,9 @@ import { DISTILL_BACKOFF_MS, groupConversations, processNote, type OmiDeps } fro
 import { JobStore } from "./src/store.ts";
 import { makeHandler } from "./server.ts";
 
+/** The handler returns undefined only after a WebSocket upgrade, which these tests never do. */
+const http = (h: ReturnType<typeof makeHandler>) => (req: Request) => h(req) as Promise<Response>;
+
 const tmp = mkdtempSync(join(tmpdir(), "omi-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 const SECRET = "omi-secret-0123456789abcdef0123";
@@ -127,7 +130,7 @@ test("short groups are skipped without running the distiller; others are queued 
 });
 
 test("a written note is recorded and announced with any new people", async () => {
-  const { d, sent } = deps("g2", async () => ({ status: "written", notePath: "inbox/2026-11-04-14-00-00 omi test.md", title: "omi test", peopleCreated: ["Mira Shah"] }));
+  const { d, sent } = deps("g2", async () => ({ status: "written", notePath: "inbox/2026-11-04-14-00-00 omi test.md", title: "omi test", peopleCreated: ["Mira Shah"], identities: [] }));
   d.store.saveConversation(conv("w", 0, 5));
   const [note] = groupConversations(d);
   await processNote(note, d);
@@ -155,7 +158,7 @@ test("distiller failures retry with backoff, then alert urgently and never dump 
 
 test("the daily cap defers notes instead of dropping them", async () => {
   let calls = 0;
-  const { d, sent } = deps("g4", async () => (calls++, { status: "written", notePath: "inbox/x.md", title: "x", peopleCreated: [] }), { maxNotesPerDay: 1 });
+  const { d, sent } = deps("g4", async () => (calls++, { status: "written", notePath: "inbox/x.md", title: "x", peopleCreated: [], identities: [] }), { maxNotesPerDay: 1 });
   d.store.saveConversation(conv("c1", 0, 5));
   d.store.saveConversation(conv("c2", 30, 35));
   const notes = groupConversations(d);
@@ -171,7 +174,7 @@ test("the daily cap defers notes instead of dropping them", async () => {
 test("the /omi route needs the secret, saves once, and keeps discarded and background conversations out", async () => {
   const store = new OmiStore(join(tmp, "route"));
   let kicked = 0;
-  const handle = makeHandler(new JobStore(join(tmp, "route-jobs")), () => {}, "x", { store, kick: () => kicked++, secret: SECRET });
+  const handle = http(makeHandler(new JobStore(join(tmp, "route-jobs")), () => {}, "x", { store, kick: () => kicked++, secret: SECRET }));
   const post = (path: string, body: unknown) =>
     handle(new Request(`http://localhost${path}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }));
   expect((await post("/omi/wrong", payload())).status).toBe(404);
@@ -203,6 +206,12 @@ test("guard: reads stay in the vault; Bash is only a quoted margins recall", () 
   expect(decide("Read", { file_path: join(ctx.vaultDir, "..", "secret.env") }, ctx).allow).toBe(false);
   expect(decide("Grep", { pattern: "x", path: "/etc" }, ctx).allow).toBe(false);
   expect(decide("Glob", { pattern: "people/*.md" }, ctx).allow).toBe(true);
+  expect(decide("Glob", { pattern: "/etc/*" }, ctx).allow).toBe(false);
+  expect(decide("Glob", { pattern: `${ctx.vaultDir}/people/*.md` }, ctx).allow).toBe(true);
+  expect(decide("Glob", { pattern: "../**/*.env", path: ctx.vaultDir }, ctx).allow).toBe(false);
+  expect(decide("Glob", { pattern: "~/.ssh/*" }, ctx).allow).toBe(false);
+  expect(decide("Grep", { pattern: "x", path: ctx.vaultDir, glob: "/home/**" }, ctx).allow).toBe(false);
+  expect(decide("Grep", { pattern: "a/../b", path: ctx.vaultDir }, ctx).allow).toBe(true); // regex, not a path
   expect(decide("Bash", { command: 'margins --workspace obsidian recall "ring agent omi"' }, ctx).allow).toBe(true);
   for (const bad of [
     'margins --workspace obsidian recall "x"; rm -rf /', 'margins --workspace obsidian recall "$(cat ~/.env)"',

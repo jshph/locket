@@ -6,8 +6,10 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
-import { config } from "./config.ts";
+import { childEnv, config } from "./config.ts";
+import type { Notifier } from "./notify.ts";
 import type { OmiConversation, OmiSegment } from "./omi.ts";
+import { log, words } from "./util.ts";
 
 export type AsrSpeaker = {
   label: string;
@@ -31,10 +33,6 @@ export type Asr = {
   process: (startMs: number, endMs: number) => Promise<AsrResult>;
   learn: (name: string, runId: string, cluster: number) => Promise<string>;
 };
-
-function log(msg: string, extra: Record<string, unknown> = {}) {
-  console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
-}
 
 const base = () => `http://127.0.0.1:${config.asrPort}`;
 
@@ -61,19 +59,15 @@ export const localAsr: Asr = {
   },
 };
 
-/** Spoken words in the transcript Omi sent, and in ours, decide which one to trust. */
-function words(texts: string[]) {
-  return texts.reduce((n, t) => n + t.split(/\s+/).filter(Boolean).length, 0);
-}
-
 /**
  * Replaces Omi's transcript with the speech service's when our stored audio really covers the
  * conversation. Recordings the pendant stored offline are transcribed by Omi and aren't in our
  * audio, so those keep Omi's transcript (and speakers).
  */
 export function applyAsr(conv: OmiConversation, r: AsrResult): OmiConversation {
-  const omiWords = words(conv.segments.map((s) => s.text));
-  const ourWords = words(r.segments.map((s) => s.text));
+  // Spoken words in the transcript Omi sent, and in ours, decide which one to trust.
+  const omiWords = conv.segments.reduce((n, s) => n + words(s.text), 0);
+  const ourWords = r.segments.reduce((n, s) => n + words(s.text), 0);
   const omiSpeech = conv.segments.reduce((n, s) => n + Math.max(0, s.end - s.start), 0);
   const covers = r.segments.length > 0 && r.covered_seconds >= Math.max(3, 0.3 * omiSpeech) && ourWords >= 0.4 * omiWords;
   if (!covers) return { ...conv, transcriptSource: "omi" };
@@ -110,26 +104,38 @@ export function asrAvailable() {
   return existsSync(config.asrPython) && existsSync(join(config.asrDir, "service.py"));
 }
 
-/** Runs asr/service.py and restarts it if it exits; stop() ends it for good. */
-export function startAsrService() {
+/**
+ * Runs asr/service.py and restarts it if it exits, backing off from 5 s to 5 min while it keeps
+ * crashing early (a missing model, say) and alerting once. stop() ends it for good.
+ */
+export function startAsrService(notify?: Notifier) {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let stopping = false;
+  let delay = 5_000;
+  let alerted = false;
   const start = () => {
+    const startedAt = Date.now();
     proc = Bun.spawn([config.asrPython, "service.py"], {
       cwd: config.asrDir,
-      env: {
-        HOME: process.env.HOME ?? "/home/you", PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8",
+      env: childEnv({
         STATE_DIR: resolve(config.stateDir), OMI_ASR_PORT: String(config.asrPort),
         OMI_AUDIO_RETENTION_DAYS: String(config.omiAudioRetentionDays),
-        ...Object.fromEntries(Object.entries(process.env).filter(([k]) => /^OMI_(OWNER|PERSON|VOICE|DIARIZE|ASR_THREADS)/.test(k)) as [string, string][]),
-      },
+        ...Object.fromEntries(Object.entries(process.env).filter(([k, v]) => v !== undefined && /^OMI_(OWNER|PERSON|VOICE|DIARIZE|SAME|LIVE|LEARN|ASR_THREADS)/.test(k)) as [string, string][]),
+      }),
       stdout: "inherit",
       stderr: "inherit",
     });
     proc.exited.then((code) => {
       if (stopping) return;
-      log("speech service exited, restarting", { code });
-      setTimeout(start, 5_000);
+      const ranMs = Date.now() - startedAt;
+      delay = ranMs > 5 * 60_000 ? 5_000 : Math.min(delay * 2, 5 * 60_000);
+      log("speech service exited, restarting", { code, ranMs, retryInMs: delay });
+      if (ranMs < 60_000 && delay >= 40_000 && !alerted) {
+        alerted = true;
+        void notify?.("Omi: speech service keeps crashing", "Live transcription and re-transcription are down; Omi's transcripts are used meanwhile. See journalctl -u index-agent.", { urgent: true });
+      }
+      if (ranMs > 5 * 60_000) alerted = false;
+      setTimeout(start, delay);
     });
   };
   start();
@@ -146,8 +152,9 @@ export function startAsrService() {
 type SttSocketData = { query: string; upstream?: WebSocket; queue: (string | ArrayBuffer | Uint8Array)[]; queued: number };
 const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
 
-export function upgradeStt(req: Request, server: Server, url: URL): boolean {
-  return server.upgrade(req, { data: { query: url.search, queue: [], queued: 0 } satisfies SttSocketData });
+export function upgradeStt(req: Request, server: Server<any>, url: URL): boolean {
+  const data: SttSocketData = { query: url.search, queue: [], queued: 0 };
+  return (server as Server<SttSocketData>).upgrade(req, { data });
 }
 
 export const sttWebsocket = {
@@ -163,7 +170,7 @@ export const sttWebsocket = {
       ws.data.queued = 0;
     };
     up.onmessage = (e) => ws.send(e.data as string);
-    up.onclose = () => ws.close();
+    up.onclose = (e) => ws.close(e.code === 1005 || e.code === 1006 ? 1000 : e.code, e.reason);
     up.onerror = () => {
       log("speech service connection failed");
       ws.close(1011, "speech service unavailable");
@@ -172,7 +179,11 @@ export const sttWebsocket = {
   message(ws: ServerWebSocket<SttSocketData>, msg: string | Buffer) {
     const up = ws.data.upstream;
     const data = typeof msg === "string" ? msg : new Uint8Array(msg);
-    if (up?.readyState === WebSocket.OPEN) return up.send(data);
+    if (up?.readyState === WebSocket.OPEN) {
+      // The service reads as fast as audio arrives; a large backlog means it is stuck.
+      if (up.bufferedAmount > MAX_QUEUED_BYTES) return ws.close(1011, "speech service is not keeping up");
+      return up.send(data);
+    }
     ws.data.queued += typeof data === "string" ? data.length : data.byteLength;
     if (ws.data.queued > MAX_QUEUED_BYTES) return ws.close(1011, "speech service not ready");
     ws.data.queue.push(data);

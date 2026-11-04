@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanTitle, localStamp, noteContent, writeNote } from "./src/actions.ts";
@@ -9,6 +9,9 @@ import { JobStore, type Job } from "./src/store.ts";
 import { sign, signedBytes } from "./src/webhook.ts";
 import { ACTION_BACKOFF_MS, ROUTE_BACKOFF_MS, processJob, type Deps } from "./src/worker.ts";
 import { makeHandler } from "./server.ts";
+
+/** The handler returns undefined only after a WebSocket upgrade, which these tests never do. */
+const http = (h: ReturnType<typeof makeHandler>) => (req: Request) => h(req) as Promise<Response>;
 
 const SECRET = "test-secret-0123456789abcdef0123456789abcdef";
 const tmp = mkdtempSync(join(tmpdir(), "index-agent-"));
@@ -39,7 +42,7 @@ async function delivery(opts: { transcription?: string; id?: string; isTest?: bo
 test("signed delivery is saved as a pending job and acknowledged at once", async () => {
   const store = new JobStore(join(tmp, "h1"));
   let kicked = 0;
-  const handle = makeHandler(store, () => kicked++, SECRET);
+  const handle = http(makeHandler(store, () => kicked++, SECRET));
   const req = await delivery({ transcription: "  Call the bank tomorrow  ", id: "dlv-1" });
   const res = await handle(req);
   expect(res.status).toBe(200);
@@ -53,7 +56,7 @@ test("signed delivery is saved as a pending job and acknowledged at once", async
 
 test("bad signature, stale timestamp, test events and duplicates create no job", async () => {
   const store = new JobStore(join(tmp, "h2"));
-  const handle = makeHandler(store, () => {}, SECRET);
+  const handle = http(makeHandler(store, () => {}, SECRET));
   expect((await handle(await delivery({ transcription: "x", secret: "wrong" }))).status).toBe(401);
   expect((await handle(await delivery({ transcription: "x", skewSec: -600 }))).status).toBe(401);
   expect((await handle(await delivery({ transcription: "x", isTest: true }))).status).toBe(200);
@@ -200,7 +203,7 @@ test("an action that fails for good leaves the words in a fallback note and aler
 // --- calendar ---
 
 import { addMinutesLocal, finishGoogleAuth } from "./src/google.ts";
-import { actionsSchema, applyCalendarGuard, systemPrompt } from "./src/router.ts";
+import { actionsSchema, applyCalendarGuard, routerSystemPrompt as systemPrompt } from "./src/router.ts";
 
 test("calendar events need the words calendar/event, else they become a timed reminder", () => {
   const ev = { tool: "create_calendar_event" as const, title: "Dentist", start: "2026-11-06T14:00" };

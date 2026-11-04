@@ -5,7 +5,7 @@
 
 import { createTodoistTask, spawnThread, writeNote } from "./src/actions.ts";
 import { calendarConfigured, createCalendarEvent, finishGoogleAuth } from "./src/google.ts";
-import { childEnv, config } from "./src/config.ts";
+import { childEnv, config, configProblems, MIN_OMI_SECRET_LENGTH } from "./src/config.ts";
 import { ntfyNotifier } from "./src/notify.ts";
 import { claudeRouter } from "./src/router.ts";
 import { JobStore } from "./src/store.ts";
@@ -18,16 +18,14 @@ import { asrAvailable, localAsr, startAsrService, sttWebsocket, upgradeStt } fro
 import type { Server } from "bun";
 import { timingSafeEqual } from "node:crypto";
 
-function log(msg: string, extra: Record<string, unknown> = {}) {
-  console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
-}
+import { log } from "./src/util.ts";
 
 export type OmiRoute = { store: OmiStore; kick: () => void; secret: string; backgroundKeepOwnerWords?: number; enrich?: boolean };
 
 function secretMatches(expected: string, given: string) {
   const a = Buffer.from(expected, "utf8");
   const b = Buffer.from(given, "utf8");
-  return expected.length >= 24 && a.length === b.length && timingSafeEqual(a, b);
+  return expected.length >= MIN_OMI_SECRET_LENGTH && a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**
@@ -67,7 +65,7 @@ export async function handleOmi(req: Request, url: URL, omi: OmiRoute): Promise<
 }
 
 export function makeHandler(store: JobStore, kick: () => void, secret = config.webhookSecret, omi?: OmiRoute) {
-  return async function handle(req: Request, server?: Server): Promise<Response | undefined> {
+  return async function handle(req: Request, server?: Server<any>): Promise<Response | undefined> {
     const url = new URL(req.url);
     // The Omi app's Custom live transcription (WebSocket), piped to the local speech service.
     if (omi?.enrich && server && req.method === "GET" && url.pathname.startsWith("/stt/")) {
@@ -135,9 +133,13 @@ if (import.meta.main) {
     notify: ntfyNotifier,
   };
   const worker = startWorker(deps);
+  const problems = configProblems();
+  for (const p of problems) log("config problem", { problem: p });
+  if (problems.length) void ntfyNotifier("Index: needs attention", problems.join("\n"), { urgent: true });
+  const omiOn = config.omiWebhookSecret.length >= MIN_OMI_SECRET_LENGTH;
   const omiStore = new OmiStore(config.stateDir);
-  const speech = config.omiWebhookSecret && config.asrEnabled && asrAvailable() ? startAsrService() : null;
-  const omiWorker = config.omiWebhookSecret
+  const speech = omiOn && config.asrEnabled && asrAvailable() ? startAsrService(ntfyNotifier) : null;
+  const omiWorker = omiOn
     ? startOmiWorker({
       store: omiStore, distill: claudeDistiller, notify: ntfyNotifier,
       mergeGapMs: config.omiMergeGapMs, minWords: config.omiMinWords, maxNotesPerDay: config.omiMaxNotesPerDay,
@@ -153,7 +155,7 @@ if (import.meta.main) {
   }, 6 * 3600_000);
   const server = Bun.serve({
     port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES,
-    fetch: makeHandler(store, worker.kick, config.webhookSecret, omi) as (req: Request, server: Server) => Promise<Response | undefined>,
+    fetch: makeHandler(store, worker.kick, config.webhookSecret, omi) as (req: Request, server: Server<any>) => Promise<Response | undefined>,
     websocket: sttWebsocket,
   });
   // Restarts are a plain SIGTERM (see scripts/restart.sh); systemd's Restart=always brings the

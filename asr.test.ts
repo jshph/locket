@@ -141,3 +141,60 @@ test("/stt needs the secret and a WebSocket upgrade", async () => {
   const upgrading = { upgrade: () => true } as any;
   expect(await handle(new Request(`http://localhost/stt/${SECRET}?language=en`), upgrading)).toBeUndefined();
 });
+
+test("the /stt proxy pipes audio up and transcripts down, and passes the close through", async () => {
+  const { config } = await import("./src/config.ts");
+  const { sttWebsocket } = await import("./src/asr.ts");
+  const SECRET = "omi-secret-0123456789abcdef0123";
+  const got: (string | number)[] = [];
+  // A fake speech service: records what arrives, answers once, closes on CloseStream.
+  const upstream = Bun.serve({
+    port: 0,
+    fetch: (req, srv) => (srv.upgrade(req) ? undefined : new Response("no", { status: 400 })),
+    websocket: {
+      message(ws, m) {
+        if (typeof m === "string") {
+          got.push(m);
+          if (m.includes("CloseStream")) ws.close(4001, "done");
+          return;
+        }
+        got.push(m.byteLength);
+        if (got.length === 2) ws.send(JSON.stringify({ segments: [{ text: "hello", speaker: "SPEAKER_00", is_user: true }] }));
+      },
+    },
+  });
+  const saved = config.asrPort;
+  config.asrPort = upstream.port!;
+  const handle = makeHandler(new JobStore(join(tmp, "proxy-jobs")), () => {}, "x",
+    { store: new OmiStore(join(tmp, "proxy")), kick: () => {}, secret: SECRET, enrich: true });
+  const proxy = Bun.serve({ port: 0, fetch: handle as any, websocket: sttWebsocket });
+  try {
+    const client = new WebSocket(`ws://127.0.0.1:${proxy.port}/stt/${SECRET}?language=en`);
+    const messages: string[] = [];
+    const closed = new Promise<CloseEvent>((r) => (client.onclose = r));
+    client.onmessage = (e) => messages.push(String(e.data));
+    await new Promise((r) => (client.onopen = r));
+    client.send(new Uint8Array(3200)); // likely before the upstream connection is open: queued
+    client.send(new Uint8Array(1600));
+    for (let i = 0; i < 50 && !messages.length; i++) await Bun.sleep(20);
+    client.send(JSON.stringify({ type: "CloseStream" }));
+    const ev = await closed;
+    expect(got).toEqual([3200, 1600, '{"type":"CloseStream"}']);
+    expect(JSON.parse(messages[0]).segments[0]).toMatchObject({ text: "hello", is_user: true });
+    expect(ev.code).toBe(4001);
+  } finally {
+    config.asrPort = saved;
+    proxy.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("with the speech service off, waiting conversations settle on Omi's transcript instead of stranding", async () => {
+  const d = deps("off", undefined as unknown as Asr);
+  delete (d as any).asr;
+  d.store.saveConversation({ ...omiConv("w", { salience: "highlight" }), enrich: "pending" });
+  d.setNow(T0 + 60 * MIN);
+  await enrichConversations(d);
+  expect(d.store.conversation("w")).toMatchObject({ enrich: "failed", transcriptSource: "omi" });
+  expect(groupConversations(d).map((n) => n.conversationIds)).toEqual([["w"]]);
+});

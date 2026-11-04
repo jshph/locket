@@ -10,6 +10,7 @@ import { config } from "./config.ts";
 import { LEARNABLE_EVIDENCE, type Distiller, type SpeakerIdentity } from "./distill.ts";
 import { applyAsr, type Asr } from "./asr.ts";
 import { exclusionReason, readyGroups, wordCount, type NoteJob, type OmiConversation, type OmiStore } from "./omi.ts";
+import { log, startPoller } from "./util.ts";
 
 export type OmiDeps = {
   store: OmiStore;
@@ -31,13 +32,10 @@ const WINDOW_PAD_MS = 3_000;
 export const DISTILL_BACKOFF_MS = [120_000, 600_000, 3_600_000, 3 * 3_600_000];
 const DAY_MS = 24 * 3600_000;
 
-function log(msg: string, extra: Record<string, unknown> = {}) {
-  console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
-}
 
 /** Excluded conversations get a noteId of "discarded"/"background" so they never merge. */
 function settle(c: OmiConversation, deps: OmiDeps): OmiConversation {
-  const excluded = exclusionReason(c, deps.backgroundKeepOwnerWords ?? 60);
+  const excluded = exclusionReason(c, deps.backgroundKeepOwnerWords ?? config.omiBackgroundKeepOwnerWords);
   if (excluded) log("omi excluded", { id: c.id, excluded, transcript: c.transcriptSource });
   return excluded ? { ...c, noteId: excluded } : c;
 }
@@ -48,7 +46,15 @@ function settle(c: OmiConversation, deps: OmiDeps): OmiConversation {
  * owner-engagement label depends on who spoke. If the service keeps failing, Omi's transcript stands.
  */
 export async function enrichConversations(deps: OmiDeps): Promise<void> {
-  if (!deps.asr) return;
+  if (!deps.asr) {
+    // Saved while the speech service was on, but it's off now: settle on Omi's transcript rather
+    // than waiting forever.
+    for (const c of deps.store.conversations().filter((c) => c.enrich === "pending")) {
+      deps.store.saveConversation(settle({ ...c, enrich: "failed", transcriptSource: "omi" }, deps));
+      log("omi enrich skipped (speech service off), using Omi's transcript", { id: c.id });
+    }
+    return;
+  }
   const now = (deps.now ?? Date.now)();
   const due = deps.store.conversations().filter((c) => c.enrich === "pending" && (c.enrichNextAt ?? 0) <= now)
     .sort((a, b) => a.startedAt - b.startedAt);
@@ -185,40 +191,20 @@ export async function processNote(note: NoteJob, deps: OmiDeps): Promise<void> {
   }
 }
 
-/** Polls every [pollMs]: groups closed conversations, then distills due notes one at a time. */
+/** Polls every [pollMs]: enriches and groups closed conversations, then distills due notes one at a time. */
 export function startOmiWorker(deps: OmiDeps, pollMs = 30_000) {
-  let current: Promise<void> | null = null;
-  let stopping = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const run = async () => {
+  return startPoller(async (stopping) => {
     await enrichConversations(deps);
     groupConversations(deps);
     const now = (deps.now ?? Date.now)();
     const due = deps.store.notes().filter((n) => n.status === "pending" && n.nextAttemptAt <= now).sort((a, b) => a.createdAt - b.createdAt);
     for (const note of due) {
-      if (stopping) return;
+      if (stopping()) return;
       try {
         await processNote(note, deps);
       } catch (e) {
         log("omi note crashed", { note: note.id, error: String(e) });
       }
     }
-  };
-  const tick = () => {
-    if (current || stopping) return;
-    clearTimeout(timer);
-    current = run().finally(() => {
-      current = null;
-      if (!stopping) timer = setTimeout(tick, pollMs);
-    });
-  };
-  timer = setTimeout(tick, 0);
-  return {
-    kick: tick,
-    stop: async () => {
-      stopping = true;
-      clearTimeout(timer);
-      await current;
-    },
-  };
+  }, pollMs);
 }
