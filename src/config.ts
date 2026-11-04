@@ -27,6 +27,14 @@ export const config = {
   googleClientSecret: env.GOOGLE_CLIENT_SECRET ?? "",
   googleRedirectUri: env.GOOGLE_REDIRECT_URI ?? "https://your-host.your-tailnet.ts.net:10000/oauth/google/callback",
   googleCalendarId: env.GOOGLE_CALENDAR_ID ?? "primary",
+  // Omi "Conversation created" webhook -> Margins-style distilled notes (src/omi*.ts, src/distill.ts).
+  omiWebhookSecret: env.OMI_WEBHOOK_SECRET ?? "", // the URL path is /omi/<secret>; Omi doesn't sign
+  marginsWorkspace: env.MARGINS_WORKSPACE ?? "obsidian",
+  omiEffort: env.OMI_CLAUDE_EFFORT ?? "medium",
+  omiMergeGapMs: Number(env.OMI_MERGE_GAP_MIN ?? 10) * 60_000,
+  omiMinWords: Number(env.OMI_MIN_WORDS ?? 40),
+  omiMaxNotesPerDay: Number(env.OMI_MAX_NOTES_PER_DAY ?? 30),
+
   ntfyServer: env.NTFY_SERVER ?? "https://ntfy.sh",
   ntfyTopic: env.NTFY_TOPIC ?? "",
 };

@@ -3,7 +3,7 @@
 
 import { config } from "./config.ts";
 
-export type Notifier = (title: string, message: string, opts?: { urgent?: boolean }) => Promise<void>;
+export type Notifier = (title: string, message: string, opts?: { urgent?: boolean; quiet?: boolean }) => Promise<void>;
 
 export const ntfyNotifier: Notifier = async (title, message, opts = {}) => {
   if (!config.ntfyTopic) return;
@@ -12,8 +12,8 @@ export const ntfyNotifier: Notifier = async (title, message, opts = {}) => {
       method: "POST",
       headers: {
         Title: title,
-        Priority: opts.urgent ? "high" : "default",
-        Tags: opts.urgent ? "warning" : "white_check_mark",
+        Priority: opts.urgent ? "high" : opts.quiet ? "low" : "default",
+        Tags: opts.urgent ? "warning" : opts.quiet ? "zzz" : "white_check_mark",
       },
       body: message,
     });

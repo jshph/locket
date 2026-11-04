@@ -1,6 +1,7 @@
 // Index 01 ring webhook -> agent. Verifies each signed delivery, saves it as a job, answers the
 // phone immediately, then routes the transcript with `claude -p` into vault notes, Todoist tasks
-// and bb threads (see src/worker.ts).
+// and bb threads (see src/worker.ts). Omi conversations arrive at /omi/<secret> and become
+// distilled, connected notes (see src/omi-worker.ts and src/distill.ts).
 
 import { createTodoistTask, spawnThread, writeNote } from "./src/actions.ts";
 import { calendarConfigured, createCalendarEvent, finishGoogleAuth } from "./src/google.ts";
@@ -10,16 +11,59 @@ import { claudeRouter } from "./src/router.ts";
 import { JobStore } from "./src/store.ts";
 import { verifyDelivery, MAX_BODY_BYTES } from "./src/webhook.ts";
 import { startWorker, type Deps } from "./src/worker.ts";
+import { claudeDistiller } from "./src/distill.ts";
+import { OmiStore, parseOmiPayload } from "./src/omi.ts";
+import { startOmiWorker } from "./src/omi-worker.ts";
+import { timingSafeEqual } from "node:crypto";
 
 function log(msg: string, extra: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 }
 
-export function makeHandler(store: JobStore, kick: () => void, secret = config.webhookSecret) {
+export type OmiRoute = { store: OmiStore; kick: () => void; secret: string };
+
+function secretMatches(expected: string, given: string) {
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(given, "utf8");
+  return expected.length >= 24 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Omi "Conversation created" webhook at /omi/<secret>. Omi doesn't sign requests, so the secret
+ * path is the credential. Save, then answer 200 at once: Omi never retries 4xx and disables the
+ * webhook after 100 failures, so only an unusable request gets an error.
+ */
+export async function handleOmi(req: Request, url: URL, omi: OmiRoute): Promise<Response> {
+  if (!secretMatches(omi.secret, url.pathname.slice("/omi/".length))) return new Response("not found", { status: 404 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    log("omi rejected", { reason: "invalid JSON" });
+    return new Response("invalid JSON", { status: 400 });
+  }
+  const conv = parseOmiPayload(body, Date.now());
+  if (typeof conv === "string") {
+    log("omi rejected", { reason: conv });
+    return new Response(conv, { status: 422 });
+  }
+  if (omi.store.hasConversation(conv.id)) {
+    log("omi duplicate ignored", { id: conv.id });
+    return new Response("duplicate conversation");
+  }
+  // Discarded conversations (Omi found no content) are kept only for dedupe, never distilled.
+  omi.store.saveConversation(conv.discarded ? { ...conv, noteId: "discarded" } : conv);
+  log("omi queued", { id: conv.id, segments: conv.segments.length, discarded: conv.discarded });
+  omi.kick();
+  return Response.json({ ok: true, queued: conv.id });
+}
+
+export function makeHandler(store: JobStore, kick: () => void, secret = config.webhookSecret, omi?: OmiRoute) {
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
     if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");
     if (req.method === "GET" && url.pathname === "/oauth/google/callback") return finishGoogleAuth(url);
+    if (omi && req.method === "POST" && url.pathname.startsWith("/omi/")) return handleOmi(req, url, omi);
     if (req.method !== "POST" || url.pathname !== "/index") return new Response("not found", { status: 404 });
 
     const delivery = await verifyDelivery(req, secret);
@@ -74,16 +118,27 @@ if (import.meta.main) {
     notify: ntfyNotifier,
   };
   const worker = startWorker(deps);
-  setInterval(() => store.prune(Date.now()), 6 * 3600_000);
-  const server = Bun.serve({ port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES, fetch: makeHandler(store, worker.kick) });
+  const omiStore = new OmiStore(config.stateDir);
+  const omiWorker = config.omiWebhookSecret
+    ? startOmiWorker({
+      store: omiStore, distill: claudeDistiller, notify: ntfyNotifier,
+      mergeGapMs: config.omiMergeGapMs, minWords: config.omiMinWords, maxNotesPerDay: config.omiMaxNotesPerDay,
+    })
+    : null;
+  const omi = omiWorker ? { store: omiStore, kick: omiWorker.kick, secret: config.omiWebhookSecret } : undefined;
+  setInterval(() => {
+    store.prune(Date.now());
+    omiStore.prune(Date.now());
+  }, 6 * 3600_000);
+  const server = Bun.serve({ port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES, fetch: makeHandler(store, worker.kick, config.webhookSecret, omi) });
   // Restarts are a plain SIGTERM (see scripts/restart.sh); systemd's Restart=always brings the
   // service back on the current code. Finish the job in progress first; saved jobs resume after.
   process.on("SIGTERM", async () => {
     log("stopping: finishing the job in progress");
     server.stop();
-    await Promise.race([worker.stop(), Bun.sleep(25_000)]);
+    await Promise.race([Promise.all([worker.stop(), omiWorker?.stop()]), Bun.sleep(25_000)]);
     process.exit(0);
   });
-  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured() });
+  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured(), omi: Boolean(omi) });
   void selfCheck();
 }

@@ -14,6 +14,42 @@ webhook with the transcript; this service saves it, answers immediately, then ro
 Routing rules are ported from the Index agent (`reference/upstream/`). Recordings made before 5am
 local time are "late night": "tomorrow" means the day you wake up into (today's date).
 
+## Omi conversations → distilled notes
+
+The Omi app's **Conversation created** webhook POSTs each finished conversation (full diarized
+transcript) to `/omi/<OMI_WEBHOOK_SECRET>`. Instead of saving the raw transcript, the service
+distills it into one connected note the way the Margins skill does, using your vault as context:
+
+1. The JSON is saved to `state/omi/conversations/` (kept 30 days, never in the vault) and answered
+   with 200 at once. Repeated conversation IDs and conversations Omi marked `discarded` are ignored.
+2. Conversations less than `OMI_MERGE_GAP_MIN` (10) minutes apart are merged into one note; a group
+   is distilled once nothing new has arrived for that long. Groups under `OMI_MIN_WORDS` (40) are
+   dropped silently.
+3. `claude -p` (Opus, effort `OMI_CLAUDE_EFFORT`, default medium) follows the pinned Margins
+   distillation rules (`reference/margins-skill/`), searches with `margins recall`, reads vault
+   notes, resolves speakers against `people/`, and writes `inbox/<start time> <title>.md`. It may
+   also create up to 3 person notes in `people/` for confirmed participants with no note yet. It
+   can decide a capture has nothing worth keeping (background TV, logistics) and write nothing.
+4. ntfy reports the note title and any new people; "nothing to keep" arrives as low priority.
+   Failures retry after 2m, 10m, 1h, 3h, then send an urgent ntfy; the transcript stays in state.
+   At most `OMI_MAX_NOTES_PER_DAY` (30) distillations per 24 hours; extra ones wait.
+
+Guardrails (the transcript is other people's speech, so it is treated as untrusted): Claude Code
+permission rules allow reads only inside the vault, Bash only as `margins --workspace obsidian
+recall`, and writes only directly in `inbox/` and `people/`; a PreToolUse hook
+(`src/omi-guard.ts`) further allows only new files (the assigned note name, one per run; person
+notes with plain names, no case-insensitive clash), edits only to files created in that run, and
+nothing else. No web, MCP, or other tools.
+
+**Omi app setup:** Settings → Developer Settings → Webhooks → **Conversation created** → URL
+`https://your-host.your-tailnet.ts.net:10000/omi/<OMI_WEBHOOK_SECRET>` → Save. Capture and
+transcription stay the app's defaults (Omi's cloud transcribes and diarizes). Naming a voice in
+the Omi app makes that name come through as the speaker.
+
+Try the distiller without the server: `bun run scripts/omi-distill.ts <payload.json>` (writes a
+real note; delete it afterwards). Send a payload through the live endpoint:
+`bun run scripts/omi-send.ts <payload.json>`.
+
 ## Google Calendar
 
 One-time setup: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env` (a "Web application" OAuth
@@ -36,7 +72,8 @@ The phone app sends each webhook once and never retries, so this service owns de
 ## Running
 
 - Code: `server.ts`, `src/`; tests: `bun test`
-- Secrets in `.env` (never commit or print): `INDEX_WEBHOOK_SECRET`, `TODOIST_API_TOKEN`, `NTFY_TOPIC`
+- Secrets in `.env` (never commit or print): `INDEX_WEBHOOK_SECRET`, `TODOIST_API_TOKEN`, `NTFY_TOPIC`,
+  `OMI_WEBHOOK_SECRET` (the Omi route is off when it's unset)
 - Service: system unit `index-agent` next to `bb-app.service` (`deploy/index-agent.service`);
   install once with `sudo ./deploy/install.sh`. Load new code with `./scripts/restart.sh` (no sudo).
   Logs: `journalctl -u index-agent -f`

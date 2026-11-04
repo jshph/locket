@@ -11,6 +11,9 @@ degrades into fallback notes. Read `README.md` for what it does; this file is ho
 - `src/router.ts`: `claude -p` routing; prompt and schema ported from `reference/upstream/`
 - `src/worker.ts`: route once, run actions, retries, fallback note, ntfy summary
 - `src/actions.ts`: vault note, Todoist, bb thread. `src/google.ts`: Calendar OAuth and events
+- `src/omi.ts` (payload, store, merging), `src/omi-worker.ts` (grouping, retries, cap),
+  `src/distill.ts` (the `claude -p` distiller and its prompt), `src/omi-guard.ts` (write guardrail
+  hook, entry `scripts/omi-guard.ts`); pinned Margins rules in `reference/margins-skill/`
 - `deploy/`: system unit + install script. `scripts/`: restart, dry-run routing, signed send, Google sign-in
 
 ## Operate
@@ -19,6 +22,7 @@ degrades into fallback notes. Read `README.md` for what it does; this file is ho
 systemctl status index-agent --no-pager        # system unit, runs as dev
 journalctl -u index-agent -f                   # JSON lines; never contains transcripts
 ls state/jobs/                                 # one record per recording (has transcripts)
+ls state/omi/notes/                            # one record per Omi note job; runs/<id>/ has the claude output
 ./scripts/restart.sh                           # load new code: no sudo needed
 ```
 
@@ -46,10 +50,24 @@ ls state/jobs/                                 # one record per recording (has t
    sends also push an ntfy notification to the user's phone; say so when you run them.
 4. Commit with a message saying why; keep `README.md` accurate for the user.
 
+## Omi distiller
+
+- It writes into the real vault. Test with `bun run scripts/omi-distill.ts <payload.json>` and
+  `STATE_DIR=/tmp/...`, then delete the note and any person notes it reports creating.
+- Guard changes need tests in `omi.test.ts`; never widen the permission rules in `src/distill.ts`
+  without matching guard rules. Never let it edit existing notes.
+- Prompt changes: rerun a sample with a known person (should link the existing `people/` note), a
+  self-introduced newcomer (should create one person note), and a spoken instruction (ignored).
+- A failed note can be retried by setting its `status` back to `pending` and `nextAttemptAt` to 0
+  in `state/omi/notes/<id>.json`, then `./scripts/restart.sh` (or wait for the next poll).
+- Updating the pinned Margins rules: copy `skills/margins/` from the margins repo at the commit
+  the installed CLI reports (`margins --version`) and update `reference/margins-skill/PINNED.md`.
+
 ## Secrets
 
 `.env` holds `INDEX_WEBHOOK_SECRET`, `TODOIST_API_TOKEN`, `NTFY_TOPIC`, `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`; `state/google-token.json` holds the Calendar refresh token. Never print,
+`GOOGLE_CLIENT_SECRET`, `OMI_WEBHOOK_SECRET` (it is the URL path the user pasted into the Omi app,
+so rotating it means telling them the new URL); `state/google-token.json` holds the Calendar refresh token. Never print,
 `cat`, or log them; check presence with `grep -oE '^[A-Z_]+=' .env`. To change one, run
 `bb secret request <NAME> --write-env /path/to/index-agent/.env` so the user enters it.
 Child processes (`claude`, `bb`) get a minimal env (`childEnv()`), never `.env`. 

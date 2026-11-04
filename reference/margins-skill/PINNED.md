@@ -1,0 +1,1 @@
+Margins connected-note skill pinned from margins@5c090e9c3a7b (the commit the installed margins 0.4.20 CLI was built from). Only distillation-core.md and templates/ are sent to the distiller; SKILL.md is kept for reference (its interactive approval and CLI-session steps don't apply).
