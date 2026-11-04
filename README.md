@@ -37,17 +37,49 @@ distills it into one connected note the way the Margins skill does, using your v
    Failures retry after 2m, 10m, 1h, 3h, then send an urgent ntfy; the transcript stays in state.
    At most `OMI_MAX_NOTES_PER_DAY` (30) distillations per 24 hours; extra ones wait.
 
-Guardrails (the transcript is other people's speech, so it is treated as untrusted): Claude Code
+Guardrails for the distiller (the transcript is other people's speech, so it is treated as untrusted): Claude Code
 permission rules allow reads only inside the vault, Bash only as `margins --workspace obsidian
 recall`, and writes only directly in `inbox/` and `people/`; a PreToolUse hook
 (`src/omi-guard.ts`) further allows only new files (the assigned note name, one per run; person
 notes with plain names, no case-insensitive clash), edits only to files created in that run, and
 nothing else. No web, MCP, or other tools.
 
-**Omi app setup:** Settings → Developer Settings → Webhooks → **Conversation created** → URL
-`https://your-host.your-tailnet.ts.net:10000/omi/<OMI_WEBHOOK_SECRET>` → Save. Capture and
-transcription stay the app's defaults (Omi's cloud transcribes and diarizes). Naming a voice in
-the Omi app makes that name come through as the speaker.
+**Omi app setup:**
+- Settings → Developer Settings → Webhooks → **Conversation created** →
+  `https://your-host.your-tailnet.ts.net:10000/omi/<OMI_WEBHOOK_SECRET>` → Save.
+- Settings → Developer Settings → Transcription → **Custom** (the live/WebSocket one) →
+  `wss://your-host.your-tailnet.ts.net:10000/stt/<OMI_WEBHOOK_SECRET>`. Live transcription then
+  runs here instead of on Omi's metered cloud minutes (Omi exempts custom STT from its
+  transcription limit). Without it, everything still works on Omi's transcript.
+
+## Speech service (asr/)
+
+`asr/service.py` (Python, sherpa-onnx on CPU; started and restarted by `server.ts`, localhost
+:8791) does three things:
+
+1. **Live transcription** for the Omi app's Custom STT: Silero VAD cuts utterances, Parakeet TDT
+   0.6B transcribes them (~20x real time), and each line goes back with `is_user` from the owner's
+   voiceprint so Omi's own processing still knows which lines are yours. The raw audio is stored
+   in `state/omi/audio/` with wall-clock timing, kept `OMI_AUDIO_RETENTION_DAYS` (7).
+2. **Re-transcription after each conversation:** when the webhook arrives, the worker asks the
+   service to cut that window from stored audio, re-transcribe it per utterance, label **Me** by
+   voiceprint and group the other voices, and hint at known voices ("resembles Dana Okafor"). That
+   transcript replaces Omi's for the distiller. Recordings the pendant stored offline are
+   transcribed by Omi in its cloud (not in our audio), so those keep Omi's transcript.
+3. **Voiceprints** (`state/omi/voices.json`, biometric data about other people, local only):
+   - **Enroll yourself once:** wear the pendant and talk alone for about a minute, wait for Omi to
+     close the conversation, then `bun run scripts/omi-voice.ts enroll-me latest`. Until then,
+     "Me" is guessed as the clearly loudest voice.
+   - **People are learned** only when the distiller identified a speaker from strong evidence (a
+     name you gave the voice in Omi, a self-introduction, or being addressed by name), the person
+     has a `people/` note, and they spoke 10+ seconds. A voice that sounds like yours is never
+     learned as someone else. ntfy says "Learned voices: …".
+   - `bun run scripts/omi-voice.ts list`, `delete <name>`.
+
+Voice thresholds (`OMI_OWNER_TURN` 0.82, `OMI_OWNER_LIVE` 0.82, `OMI_PERSON_MATCH` 0.70,
+`OMI_VOICE_MARGIN` 0.05, `OMI_DIARIZE_THRESHOLD` 0.45) were set on synthetic voices; revisit
+them after real use. Models (~660 MB, `asr/models/`, not in git) come from the sherpa-onnx
+releases; set up a new checkout with `cd asr && uv sync` and the download commands in AGENTS.md.
 
 Try the distiller without the server: `bun run scripts/omi-distill.ts <payload.json>` (writes a
 real note; delete it afterwards). Send a payload through the live endpoint:

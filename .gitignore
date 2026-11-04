@@ -1,3 +1,7 @@
 .env
 state/
 node_modules/
+asr/.venv/
+asr/models/
+__pycache__/
+.pytest_cache/

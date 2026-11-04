@@ -14,6 +14,9 @@ degrades into fallback notes. Read `README.md` for what it does; this file is ho
 - `src/omi.ts` (payload, store, merging), `src/omi-worker.ts` (grouping, retries, cap),
   `src/distill.ts` (the `claude -p` distiller and its prompt), `src/omi-guard.ts` (write guardrail
   hook, entry `scripts/omi-guard.ts`); pinned Margins rules in `reference/margins-skill/`
+- `src/asr.ts` (speech service client, process supervisor, `/stt` WebSocket proxy) and `asr/`
+  (Python: `service.py` live STT + `/process` + `/voices`, `engine.py` models, `store.py` audio and
+  voiceprints, `test_store.py`)
 - `deploy/`: system unit + install script. `scripts/`: restart, dry-run routing, signed send, Google sign-in
 
 ## Operate
@@ -23,6 +26,8 @@ systemctl status index-agent --no-pager        # system unit, runs as dev
 journalctl -u index-agent -f                   # JSON lines; never contains transcripts
 ls state/jobs/                                 # one record per recording (has transcripts)
 ls state/omi/notes/                            # one record per Omi note job; runs/<id>/ has the claude output
+curl -s 127.0.0.1:8791/healthz                 # speech service (child of the unit; restarts itself)
+bun run scripts/omi-voice.ts list              # enrolled voiceprints
 ./scripts/restart.sh                           # load new code: no sudo needed
 ```
 
@@ -49,6 +54,22 @@ ls state/omi/notes/                            # one record per Omi note job; ru
    event (`[gcal <id>]`), `bb thread archive <id>`, and remove `state/jobs/manual-*.json`. Live
    sends also push an ntfy notification to the user's phone; say so when you run them.
 4. Commit with a message saying why; keep `README.md` accurate for the user.
+
+## Speech service
+
+- Tests: `cd asr && .venv/bin/python -m pytest -q` (store timing, voice matching) plus `bun test`.
+- Live checks write real state: enrolling, streaming to `/stt`, and `/process` leave voiceprints,
+  `state/omi/audio/<session>/` and `state/omi/asr-runs/` behind. Delete test voiceprints with
+  `scripts/omi-voice.ts delete`, and the test sessions and runs by hand.
+- Use synthetic test voices for diarization checks, never real audio of other people.
+- Never weaken the learning guard in `service.py` (`learn`: refuses owner-like voices and voices
+  that already match someone else) or `learnVoices` in `src/omi-worker.ts` (strong evidence only).
+- New checkout: `cd asr && uv sync`, then download into `asr/models/` from
+  `https://github.com/k2-fsa/sherpa-onnx/releases/download/`: `asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2`,
+  `asr-models/silero_vad.onnx`, `speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2`,
+  `speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx` (sic), and untar the archives.
+- sherpa's Silero VAD must get exactly one 512-sample window per `accept_waveform` call; bigger
+  calls silently merge everything into one segment.
 
 ## Omi distiller
 

@@ -13,10 +13,20 @@ export type OmiSegment = {
   isUser: boolean;
   /** A person the user named in Omi (the segment has a person_id). */
   name?: string;
-  /** Omi's neutral label for an unnamed voice, e.g. "Speaker A". */
+  /** Omi's (or the speech service's) neutral label for an unnamed voice, e.g. "Speaker A". */
   label?: string;
+  /** The speech service thinks this voice is a known person: a hint, not an identification. */
+  voiceMatch?: { name: string; score: number };
   start: number;
   end: number;
+};
+
+export type AsrInfo = {
+  runId?: string;
+  ownerEnrolled: boolean;
+  /** How "Me" was found: "voiceprint", "loudest voice (owner not enrolled)", or null if not found. */
+  ownerSource: string | null;
+  speakers: { label: string; cluster: number; seconds: number; isUser: boolean; voiceMatch: { name: string; score: number } | null }[];
 };
 
 export type OmiConversation = {
@@ -31,6 +41,15 @@ export type OmiConversation = {
   segments: OmiSegment[];
   /** The note job this conversation was assigned to, once grouped. */
   noteId?: string;
+  /**
+   * Re-transcription from our own stored audio (src/asr.ts): "pending" until tried, then "done"
+   * or "failed" (Omi's transcript is kept). Absent when the speech service is off.
+   */
+  enrich?: "pending" | "done" | "failed";
+  enrichAttempts?: number;
+  enrichNextAt?: number;
+  transcriptSource?: "server" | "omi";
+  asr?: AsrInfo;
 };
 
 export type NoteJob = {

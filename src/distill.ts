@@ -14,8 +14,13 @@ import { MAX_PEOPLE, type GuardContext } from "./omi-guard.ts";
 const SKILL_DIR = join(import.meta.dir, "..", "reference", "margins-skill");
 const TEMPLATES = ["1on1-idea-exchange.md", "discovery-call.md", "group-conversation.md", "design-scoping-session.md", "talk-reflection.md"];
 
+/** Who the distiller decided a speaker was, and on what evidence. */
+export type SpeakerIdentity = { conversation: number; label: string; person: string; evidence: string };
+/** Evidence strong enough to teach the speech service a voice (never a voice match itself). */
+export const LEARNABLE_EVIDENCE = new Set(["omi_name", "self_introduction", "direct_address"]);
+
 export type DistillResult =
-  | { status: "written"; notePath: string; title: string; peopleCreated: string[] }
+  | { status: "written"; notePath: string; title: string; peopleCreated: string[]; identities: SpeakerIdentity[] }
   | { status: "skipped"; reason: string };
 
 export type Distiller = (convs: OmiConversation[], noteId: string) => Promise<DistillResult>;
@@ -30,6 +35,19 @@ export const resultSchema = {
     title: { type: "string" },
     people_created: { type: "array", items: { type: "string" }, description: "Names of person notes you created." },
     people_linked: { type: "array", items: { type: "string" }, description: "Existing person notes you linked." },
+    speaker_identities: {
+      type: "array",
+      description: "Every speaker label you identified as a person (not Me), with the strongest evidence you had.",
+      items: {
+        type: "object", additionalProperties: false, required: ["conversation", "label", "person", "evidence"],
+        properties: {
+          conversation: { type: "integer", description: "The conversation section number the label belongs to." },
+          label: { type: "string", description: 'Exactly as in the transcript, e.g. "Speaker A".' },
+          person: { type: "string", description: "The people/ note filename without .md." },
+          evidence: { type: "string", enum: ["omi_name", "self_introduction", "direct_address", "voice_match", "context"] },
+        },
+      },
+    },
     reason: { type: "string", description: "One sentence: why skipped, or what the note is about." },
   },
 };
@@ -53,7 +71,8 @@ Write nothing and return status "skipped" with a reason when the capture has no 
 # People (this matters)
 
 "Me" in the transcript is Sam Rivera, the vault owner. Never add him to people or create a note for him.
-Other speakers are labeled with the name Sam assigned to that voice in Omi (trust it as identified, though it may be a first name only) or "Speaker A"/"Speaker N" (not an identity; Omi's diarization can also split one person into two labels or merge two).
+Other speakers are labeled with the name Sam assigned to that voice in Omi (trust it as identified, though it may be a first name only) or "Speaker A"/"Speaker B" (not an identity). Speaker letters restart in each conversation section, so the same person can have different letters in different sections. Diarization can split one person into two labels or merge two people; read the words, not just the labels.
+The request may say a voice "resembles" a known person: the home server compared voiceprints. Treat that as a strong hint that still needs the transcript to agree (topic, names used, what they would know); a resemblance alone is "voice_match" evidence. If the request says "Me" was found by loudness because Sam's voice isn't enrolled, double-check which lines are his from what is said.
 
 1. Work out who actually participated: an Omi-assigned name, a self-introduction, or unambiguous direct address ("thanks, Mira"). Someone merely mentioned is not a participant.
 2. For every participant and every consequential person mentioned, look them up in ${config.vaultDir}/people/ before writing: Glob \`people/*.md\` and match full name, first name, nickname, and likely speech-to-text misspellings, case-insensitively. Use \`margins recall\` and Grep over recent inbox notes to confirm which person it is when there are several candidates (e.g. two Danas), using what the conversation is about.
@@ -77,7 +96,7 @@ tags:
 
 Leave \`people:\` or \`tags:\` empty rather than inventing values. In the body's dateline, name participants (e.g. "Sam Rivera and [[Dana Okafor]]"), include the local time span and duration. Do not paste the raw transcript; quote only the phrases that matter.
 
-When finished, reply with the structured result: status, absolute note_path, title, people_created, people_linked, and a one-sentence reason.
+When finished, reply with the structured result: status, absolute note_path, title, people_created, people_linked, speaker_identities (each labeled speaker you identified, with honest evidence: omi_name, self_introduction, direct_address, voice_match, or context), and a one-sentence reason. Speaker identities are used to teach the server voices, so never claim self_introduction or direct_address unless the transcript shows it for that exact label.
 
 # Margins distillation rules (pinned from the Margins skill)
 
@@ -100,18 +119,29 @@ export function userMessage(convs: OmiConversation[], tz = config.localTz): stri
   const start = Math.min(...convs.map((c) => c.startedAt));
   const end = Math.max(...convs.map((c) => c.finishedAt));
   const { date } = localStamp(start, tz);
-  const speakers = new Map<string, number>();
-  for (const c of convs) for (const s of c.segments) {
-    const label = speakerLabel(s);
-    speakers.set(label, (speakers.get(label) ?? 0) + s.text.split(/\s+/).filter(Boolean).length);
-  }
+  const speakers = new Map<string, { words: number; hint?: string }>();
+  convs.forEach((c, i) => {
+    for (const s of c.segments) {
+      const label = speakerLabel(s);
+      const key = label === "Me" || s.name ? label : convs.length > 1 ? `Conversation ${i + 1}, ${label}` : label;
+      const cur = speakers.get(key) ?? { words: 0 };
+      cur.words += s.text.split(/\s+/).filter(Boolean).length;
+      if (s.voiceMatch) cur.hint = `voice resembles ${s.voiceMatch.name} (similarity ${s.voiceMatch.score.toFixed(2)})`;
+      if (label === "Me" && c.asr?.ownerSource) cur.hint = `found by ${c.asr.ownerSource}`;
+      speakers.set(key, cur);
+    }
+  });
   const fmt = (ms: number) => new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(new Date(ms));
-  const speakerLines = [...speakers].map(([label, words]) => `- ${label}: ${words} words`).join("\n");
+  const speakerLines = [...speakers].map(([label, v]) => `- ${label}: ${v.words} words${v.hint ? `; ${v.hint}` : ""}`).join("\n");
+  const source = convs.every((c) => c.transcriptSource === "server")
+    ? "home server (Parakeet transcription, diarized from the stored audio)"
+    : convs.some((c) => c.transcriptSource === "server") ? "mixed: home server and Omi" : "Omi";
   return `Omi capture to distill.
 
 - Date: ${date} (${tz})
 - Time: ${fmt(start)}–${fmt(end)}, about ${minutes(end - start)} min, ${convs.length} Omi conversation${convs.length > 1 ? "s" : ""} merged
 - Total words: ${convs.reduce((n, c) => n + wordCount(c), 0)}
+- Transcript from: ${source}
 - Note filename prefix (use exactly): "${notePrefix(convs, tz)}"
 - Speakers:
 ${speakerLines}
@@ -138,6 +168,7 @@ export const claudeDistiller: Distiller = async (convs, noteId) => {
     return {
       status: "written", notePath: previousNote.slice(vault.length + 1), title: basename(previousNote, ".md").slice(notePrefix(convs).length),
       peopleCreated: previous.filter((p) => p.startsWith(`${resolve(vault, "people")}/`)).map((p) => basename(p, ".md")),
+      identities: [],
     };
   }
   rmSync(runDir, { recursive: true, force: true });
@@ -201,7 +232,11 @@ export const claudeDistiller: Distiller = async (convs, noteId) => {
   const so = result.structured_output ?? {};
   if (note) {
     const title = typeof so.title === "string" && so.title.trim() ? so.title.trim() : basename(note, ".md").slice(ctx.notePrefix.length);
-    return { status: "written", notePath: note.slice(vault.length + 1), title, peopleCreated: people };
+    const identities: SpeakerIdentity[] = Array.isArray(so.speaker_identities)
+      ? so.speaker_identities.filter((x: any) => x && typeof x.label === "string" && typeof x.person === "string")
+        .map((x: any) => ({ conversation: Number(x.conversation) || 1, label: x.label, person: x.person, evidence: String(x.evidence) }))
+      : [];
+    return { status: "written", notePath: note.slice(vault.length + 1), title, peopleCreated: people, identities };
   }
   if (people.length) throw new Error(`created person notes (${people.join(", ")}) but no conversation note`);
   if (so.status === "skipped") return { status: "skipped", reason: String(so.reason ?? "no reason given").slice(0, 300) };

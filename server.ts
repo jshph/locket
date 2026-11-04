@@ -14,13 +14,15 @@ import { startWorker, type Deps } from "./src/worker.ts";
 import { claudeDistiller } from "./src/distill.ts";
 import { exclusionReason, OmiStore, parseOmiPayload } from "./src/omi.ts";
 import { startOmiWorker } from "./src/omi-worker.ts";
+import { asrAvailable, localAsr, startAsrService, sttWebsocket, upgradeStt } from "./src/asr.ts";
+import type { Server } from "bun";
 import { timingSafeEqual } from "node:crypto";
 
 function log(msg: string, extra: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 }
 
-export type OmiRoute = { store: OmiStore; kick: () => void; secret: string; backgroundKeepOwnerWords?: number };
+export type OmiRoute = { store: OmiStore; kick: () => void; secret: string; backgroundKeepOwnerWords?: number; enrich?: boolean };
 
 function secretMatches(expected: string, given: string) {
   const a = Buffer.from(expected, "utf8");
@@ -53,16 +55,29 @@ export async function handleOmi(req: Request, url: URL, omi: OmiRoute): Promise<
   }
   // Excluded conversations (Omi discarded them, or background) are kept only for dedupe: never
   // distilled, and never merged, so ambient TV can't chain two real conversations into one note.
-  const excluded = exclusionReason(conv, omi.backgroundKeepOwnerWords ?? config.omiBackgroundKeepOwnerWords);
-  omi.store.saveConversation(excluded ? { ...conv, noteId: excluded } : conv);
+  // With the speech service on, the background check waits for our re-transcription (it needs to
+  // know which lines are the owner's), so only Omi's discards are settled here.
+  const excluded = omi.enrich
+    ? (conv.discarded ? "discarded" : null)
+    : exclusionReason(conv, omi.backgroundKeepOwnerWords ?? config.omiBackgroundKeepOwnerWords);
+  omi.store.saveConversation(excluded ? { ...conv, noteId: excluded } : omi.enrich ? { ...conv, enrich: "pending" } : conv);
   log(excluded ? "omi excluded" : "omi queued", { id: conv.id, segments: conv.segments.length, salience: conv.salience, excluded });
   omi.kick();
   return Response.json({ ok: true, queued: conv.id });
 }
 
 export function makeHandler(store: JobStore, kick: () => void, secret = config.webhookSecret, omi?: OmiRoute) {
-  return async function handle(req: Request): Promise<Response> {
+  return async function handle(req: Request, server?: Server): Promise<Response | undefined> {
     const url = new URL(req.url);
+    // The Omi app's Custom live transcription (WebSocket), piped to the local speech service.
+    if (omi?.enrich && server && req.method === "GET" && url.pathname.startsWith("/stt/")) {
+      if (!secretMatches(omi.secret, url.pathname.slice("/stt/".length))) return new Response("not found", { status: 404 });
+      if (upgradeStt(req, server, url)) {
+        log("stt connected");
+        return undefined;
+      }
+      return new Response("expected a WebSocket upgrade", { status: 426 });
+    }
     if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");
     if (req.method === "GET" && url.pathname === "/oauth/google/callback") return finishGoogleAuth(url);
     if (omi && req.method === "POST" && url.pathname.startsWith("/omi/")) return handleOmi(req, url, omi);
@@ -121,26 +136,35 @@ if (import.meta.main) {
   };
   const worker = startWorker(deps);
   const omiStore = new OmiStore(config.stateDir);
+  const speech = config.omiWebhookSecret && config.asrEnabled && asrAvailable() ? startAsrService() : null;
   const omiWorker = config.omiWebhookSecret
     ? startOmiWorker({
       store: omiStore, distill: claudeDistiller, notify: ntfyNotifier,
       mergeGapMs: config.omiMergeGapMs, minWords: config.omiMinWords, maxNotesPerDay: config.omiMaxNotesPerDay,
+      backgroundKeepOwnerWords: config.omiBackgroundKeepOwnerWords, asr: speech ? localAsr : undefined,
     })
     : null;
-  const omi = omiWorker ? { store: omiStore, kick: omiWorker.kick, secret: config.omiWebhookSecret } : undefined;
+  const omi = omiWorker
+    ? { store: omiStore, kick: omiWorker.kick, secret: config.omiWebhookSecret, enrich: Boolean(speech) }
+    : undefined;
   setInterval(() => {
     store.prune(Date.now());
     omiStore.prune(Date.now());
   }, 6 * 3600_000);
-  const server = Bun.serve({ port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES, fetch: makeHandler(store, worker.kick, config.webhookSecret, omi) });
+  const server = Bun.serve({
+    port: config.port, hostname: config.host, maxRequestBodySize: MAX_BODY_BYTES,
+    fetch: makeHandler(store, worker.kick, config.webhookSecret, omi) as (req: Request, server: Server) => Promise<Response | undefined>,
+    websocket: sttWebsocket,
+  });
   // Restarts are a plain SIGTERM (see scripts/restart.sh); systemd's Restart=always brings the
   // service back on the current code. Finish the job in progress first; saved jobs resume after.
   process.on("SIGTERM", async () => {
     log("stopping: finishing the job in progress");
     server.stop();
     await Promise.race([Promise.all([worker.stop(), omiWorker?.stop()]), Bun.sleep(25_000)]);
+    speech?.stop();
     process.exit(0);
   });
-  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured(), omi: Boolean(omi) });
+  log("listening", { host: config.host, port: config.port, model: config.claudeModel, tz: config.localTz, calendar: calendarConfigured(), omi: Boolean(omi), speech: Boolean(speech) });
   void selfCheck();
 }

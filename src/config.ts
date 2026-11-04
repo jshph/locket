@@ -35,6 +35,13 @@ export const config = {
   omiMinWords: Number(env.OMI_MIN_WORDS ?? 40),
   omiBackgroundKeepOwnerWords: Number(env.OMI_BACKGROUND_KEEP_OWNER_WORDS ?? 60),
   omiMaxNotesPerDay: Number(env.OMI_MAX_NOTES_PER_DAY ?? 30),
+  // Local speech service (asr/): live transcription for the Omi app's Custom STT at /stt/<secret>,
+  // stored audio, and diarized re-transcription of each conversation. Off with OMI_ASR=0.
+  asrEnabled: (env.OMI_ASR ?? "1") !== "0",
+  asrPort: Number(env.OMI_ASR_PORT ?? 8791),
+  asrDir: env.OMI_ASR_DIR ?? new URL("../asr", import.meta.url).pathname,
+  asrPython: env.OMI_ASR_PYTHON ?? new URL("../asr/.venv/bin/python", import.meta.url).pathname,
+  omiAudioRetentionDays: Number(env.OMI_AUDIO_RETENTION_DAYS ?? 7),
 
   ntfyServer: env.NTFY_SERVER ?? "https://ntfy.sh",
   ntfyTopic: env.NTFY_TOPIC ?? "",
