@@ -1,7 +1,5 @@
 # locket
 
-*A pendant that keeps what matters.*
-
 A self-hosted agent for wearable capture devices. Recordings from a **Pebble Index 01** ring and
 an **Omi** pendant arrive at your own server and become notes in your Markdown vault (Obsidian or
 any folder), Todoist tasks, Google Calendar events, or [bb](https://getbb.app) agent threads. It
