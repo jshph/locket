@@ -111,7 +111,7 @@ function runsToday(deps: OmiDeps, now: number) {
 }
 
 /**
- * Teaches the speech service voices the distiller identified from strong evidence (a name Sam
+ * Teaches the speech service voices the distiller identified from strong evidence (a name the owner
  * gave the voice in Omi, a self-introduction, or direct address; never a voice match alone). The
  * person must have a people/ note, the speaker at least 10 s of speech, and the label must map to
  * one person only. The service separately refuses anything that sounds like the owner.

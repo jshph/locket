@@ -5,3 +5,4 @@ asr/.venv/
 asr/models/
 __pycache__/
 .pytest_cache/
+AGENTS.local.md

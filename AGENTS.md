@@ -1,115 +1,110 @@
 # Agent operating guide
 
-This service is live: every Hold & Talk recording from the user's Index 01 ring arrives here. A
-broken deploy loses nothing (jobs are saved and retried), but a broken router or action quietly
-degrades into fallback notes. Read `README.md` for what it does; this file is how to operate it.
+This is a live service: recordings from the owner's devices arrive here and become notes, tasks
+and threads. A broken deploy loses nothing (deliveries are saved and retried), but a broken router,
+distiller or action quietly degrades results. `README.md` says what it does; this file is how to
+operate and change it. **If `AGENTS.local.md` exists, read it too**: it holds this machine's
+deployment facts and is never committed.
 
 ## Layout
 
-- `server.ts`: HTTP (`/index` webhook, `/healthz`, `/oauth/google/callback`), wiring, SIGTERM handling
-- `src/webhook.ts`: signature check (protocol v1). `src/store.ts`: one job file per delivery
-- `src/router.ts`: `claude -p` routing; prompt and schema ported from `reference/upstream/`
-- `src/worker.ts`: route once, run actions, retries, fallback note, ntfy summary
-- `src/actions.ts`: vault note, Todoist, bb thread. `src/google.ts`: Calendar OAuth and events
-- `src/omi.ts` (payload, store, merging), `src/omi-worker.ts` (grouping, retries, cap),
-  `src/distill.ts` (the `claude -p` distiller and its prompt), `src/omi-guard.ts` (write guardrail
-  hook, entry `scripts/omi-guard.ts`); pinned Margins rules in `reference/margins-skill/`
-- `src/asr.ts` (speech service client, process supervisor, `/stt` WebSocket proxy) and `asr/`
-  (Python: `service.py` live STT + `/process` + `/voices`, `engine.py` models, `store.py` audio and
-  voiceprints, `test_store.py`)
-- `deploy/`: system unit + install script. `scripts/`: restart, dry-run routing, signed send, Google sign-in
+- `server.ts`: HTTP routes (`/index`, `/omi/<secret>`, `/stt/<secret>`, `/healthz`,
+  `/oauth/google/callback`), wiring, startup checks, SIGTERM handling
+- Ring: `src/webhook.ts` (signature, protocol v1), `src/store.ts` (one job file per delivery),
+  `src/router.ts` (`claude -p` routing, adapted from `reference/upstream/`), `src/worker.ts`
+  (route once, run actions, retries, fallback note), `src/actions.ts` (note, Todoist, bb thread),
+  `src/google.ts` (Calendar)
+- Omi: `src/omi.ts` (payload, store, merging), `src/omi-worker.ts` (enrich, group, distill,
+  learn voices), `src/distill.ts` (distiller prompt and run), `src/omi-guard.ts` (write guardrail
+  hook, entry `scripts/omi-guard.ts`), pinned Margins rules in `reference/margins-skill/`
+- Speech: `src/asr.ts` (client, supervisor, `/stt` proxy) and `asr/` (Python: `service.py` live
+  STT + `/process` + `/voices`, `engine.py` models, `store.py` audio and voiceprints)
+- Shared: `src/util.ts` (log, poller, JSON-file store, `claude -p` runner, fetch with timeout),
+  `src/config.ts` (all settings, startup validation)
+- `deploy/` (unit template + installer), `scripts/` (restart, dry runs, sends, voiceprints, models)
 
 ## Operate
 
 ```bash
-systemctl status index-agent --no-pager        # system unit, runs as dev
+systemctl status index-agent --no-pager        # the unit runs as the installing user
 journalctl -u index-agent -f                   # JSON lines; never contains transcripts
-ls state/jobs/                                 # one record per recording (has transcripts)
-ls state/omi/notes/                            # one record per Omi note job; runs/<id>/ has the claude output
+ls state/jobs/                                 # one record per ring recording (has transcripts)
+ls state/omi/notes/                            # one record per Omi note; runs/<id>/ has claude output
 curl -s 127.0.0.1:8791/healthz                 # speech service (child of the unit; restarts itself)
 bun run scripts/omi-voice.ts list              # enrolled voiceprints
 ./scripts/restart.sh                           # load new code: no sudo needed
 ```
 
-- Restart with `scripts/restart.sh`, never `sudo`. It sends SIGTERM to the service's own process
-  (owned by `dev`); the server finishes the job in progress and systemd's `Restart=always` starts
-  it on the current code. Only changes to `deploy/index-agent.service` itself need the user to run
-  `sudo ./deploy/install.sh`; ask them, don't try.
+- Restart with `scripts/restart.sh`, never `sudo`: it sends SIGTERM to the service's own process,
+  the server finishes the work in progress, and `Restart=always` starts it on the current code.
+  Only unit-template changes need the owner to run `sudo ./deploy/install.sh`; ask, don't try.
 - Check `state/jobs/*.json` for `"status": "pending"` before risky work; pending jobs resume after
   a restart, but an action cut off mid-call may run twice.
-- The Google connection is read per recording; adding or removing `state/google-token.json`
-  takes effect without a restart. A failed refresh means re-running `bun run scripts/google-auth.ts`
-  (the user opens the printed link).
+- Startup logs `config problem` lines (and sends one urgent ntfy) for unusable settings.
+- Google: the token is read per use; a failed refresh means re-running
+  `bun run scripts/google-auth.ts` (the owner opens the printed link).
 
 ## Change and verify
 
-1. `bun test` must pass. Add a test for new logic; the worker, store and webhook are tested
-   with fakes in `server.test.ts`.
+1. `bun run check` must pass (strict type check, `bun test`, pytest). Add tests for new logic.
 2. Router or prompt changes: dry-run real cases with `bun run scripts/route.ts "<words>" [--at <ISO>]`
-   (calls `claude -p` only, no side effects). Check at least a note, a reminder, a thread, a
-   calendar event, and the case your change targets.
+   (calls `claude -p` only). Check a note, a reminder, a thread, a calendar event, and your case.
 3. `./scripts/restart.sh`, then a live check if actions changed: `bun run scripts/send.ts "<words>"`
-   sends a signed delivery like the ring. It creates real things. Clean up every one of them:
-   delete the vault note, delete the Todoist task (`[todoist <id>]` in the log), delete the Calendar
-   event (`[gcal <id>]`), `bb thread archive <id>`, and remove `state/jobs/manual-*.json`. Live
-   sends also push an ntfy notification to the user's phone; say so when you run them.
-4. Commit with a message saying why; keep `README.md` accurate for the user.
+   sends a signed delivery like the ring and creates real things. Clean up every one: the vault
+   note, the Todoist task (`[todoist <id>]` in the log), the Calendar event (`[gcal <id>]`),
+   `bb thread archive <id>`, and `state/jobs/manual-*.json`. Live sends also push ntfy
+   notifications to the owner's phone; say so when you run them.
+4. Commit with a message saying why; keep `README.md` accurate.
 
 ## Speech service
 
-- Tests: `cd asr && .venv/bin/python -m pytest -q` (store timing, voice matching) plus `bun test`.
 - Live checks write real state: enrolling, streaming to `/stt`, and `/process` leave voiceprints,
   `state/omi/audio/<session>/` and `state/omi/asr-runs/` behind. Delete test voiceprints with
   `scripts/omi-voice.ts delete`, and the test sessions and runs by hand.
-- Use synthetic test voices for diarization checks, never real audio of other people.
-- Never weaken the learning guard in `service.py` (`learn`: refuses owner-like voices and voices
-  that already match someone else) or `learnVoices` in `src/omi-worker.ts` (strong evidence only).
-- New checkout: `cd asr && uv sync`, then download into `asr/models/` from
-  `https://github.com/k2-fsa/sherpa-onnx/releases/download/`: `asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2`,
-  `asr-models/silero_vad.onnx`, `speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2`,
-  `speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx` (sic), and untar the archives.
+- Use synthetic voices for diarization checks (e.g. piper TTS), never real audio of other people.
+- Never weaken the learning guard (`learn_cluster` in `asr/service.py`: refuses owner-like voices
+  and voices that already match someone else) or `learnVoices` in `src/omi-worker.ts` (strong
+  evidence only).
+- New checkout: `cd asr && uv sync && ../scripts/download-models.sh`.
 - sherpa's Silero VAD must get exactly one 512-sample window per `accept_waveform` call; bigger
   calls silently merge everything into one segment.
+- Voices are grouped per pause-delimited utterance, not by pyannote's clusters: pyannote split
+  one real speaker into three, and diarized turns can span two people.
 
 ## Omi distiller
 
-- It writes into the real vault. Test with `bun run scripts/omi-distill.ts <payload.json>` and
-  `STATE_DIR=/tmp/...`, then delete the note and any person notes it reports creating.
+- It writes into the real vault. Test with `STATE_DIR=/tmp/... bun run scripts/omi-distill.ts
+  <payload.json>` (or `--conversation <stored id>`), then delete the note and any person notes.
 - Guard changes need tests in `omi.test.ts`; never widen the permission rules in `src/distill.ts`
   without matching guard rules. Never let it edit existing notes.
 - Prompt changes: rerun a sample with a known person (should link the existing `people/` note), a
   self-introduced newcomer (should create one person note), and a spoken instruction (ignored).
-- A failed note can be retried by setting its `status` back to `pending` and `nextAttemptAt` to 0
-  in `state/omi/notes/<id>.json`, then `./scripts/restart.sh` (or wait for the next poll).
+- Retry a failed note: set its `status` to `pending` and `nextAttemptAt` to 0 in
+  `state/omi/notes/<id>.json`, then wait for the next poll or restart.
 - Updating the pinned Margins rules: copy `skills/margins/` from the margins repo at the commit
   the installed CLI reports (`margins --version`) and update `reference/margins-skill/PINNED.md`.
 
 ## Secrets
 
-`.env` holds `INDEX_WEBHOOK_SECRET`, `TODOIST_API_TOKEN`, `NTFY_TOPIC`, `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `OMI_WEBHOOK_SECRET` (it is the URL path the user pasted into the Omi app,
-so rotating it means telling them the new URL); `state/google-token.json` holds the Calendar refresh token. Never print,
-`cat`, or log them; check presence with `grep -oE '^[A-Z_]+=' .env`. To change one, run
-`bb secret request <NAME> --write-env /path/to/index-agent/.env` so the user enters it.
-Child processes (`claude`, `bb`) get a minimal env (`childEnv()`), never `.env`. 
+`.env` holds the webhook secrets, API tokens and ntfy topic (see `.env.example`);
+`state/google-token.json` holds the Calendar refresh token and `state/omi/voices.json` the
+voiceprints. Never print, `cat`, or log them; check presence with `grep -oE '^[A-Z_]+=' .env`.
+Child processes (`claude`, `bb`, the speech service) get a minimal env (`childEnv()`), never
+`.env`. `OMI_WEBHOOK_SECRET` is the path pasted into the Omi app, so rotating it means giving the
+owner both new URLs.
 
 ## Gotchas
 
-- `claude -p` runs on the user's Claude subscription. `--bare` can't be used (API keys only).
-  Isolation comes from `--tools ''`, `--strict-mcp-config`, `--setting-sources ''`,
-  `--disable-slash-commands`, and the empty `state/claude-cwd`. Usage limits or an expired login
-  show up as route retries, then fallback notes and an urgent ntfy.
-- The model never writes the user's words: note bodies and thread prompts are the raw transcript
-  (the model once trimmed "Note to self:"). It only picks actions, titles and times.
+- `claude -p` runs on the owner's Claude subscription; `--bare` can't be used (API keys only).
+  Isolation comes from `--tools ''` (router) or the distiller's allow-list, `--strict-mcp-config`,
+  `--setting-sources ''`, `--disable-slash-commands`, and an empty working directory.
+- The router never writes the owner's words: ring note bodies and thread prompts are the raw
+  transcript. It only picks actions, titles and times.
 - Calendar events need the words "calendar" or "event" in the transcript (`applyCalendarGuard`,
-  ported from the app); otherwise they become timed reminders.
-- Times: `LOCAL_TZ` (America/Bogota, inferred from vault file times). Before 5am local
-  (`LATE_NIGHT_END_HOUR`), "tomorrow" means today's date. Recurring phrases go to Todoist as said.
-- Notes match `templates/quick capture.md` in the vault: empty `tags:` and `people:`. Don't add tags.
-- Phone side (Pebble app, not fixable here): webhooks are sent once and never retried; webhook-only
-  gestures show no notification; transcription gives up for good after 45s on slow networks; payload
-  mode "Both" can drop the transcript, so keep "Transcription only". Typed text in the app goes to
-  Core's agent and to this webhook.
-- Public URL is Tailscale Funnel on :10000 (the only free Funnel port; 443/8443 are tailnet-only
-  serves). bb Connect port shares can't be used for webhooks (owner session only).
-- `deploy/index-agent.service` re-applies the Funnel on start; `tailscale funnel status` to check.
+  as in the upstream app); otherwise they become timed reminders.
+- Before 5am local (`LATE_NIGHT_END_HOUR`), "tomorrow" means today's date.
+- Pebble app (not fixable here): webhooks are sent once and never retried; webhook-only gestures
+  show no notification; keep payload mode "Transcription only" ("Both" can drop the transcript).
+- Omi app: in Custom STT mode it logs "Unsupported message type: String" for status messages it
+  meant only for Omi's backend; harmless. Pendant recordings synced from offline storage are
+  transcribed by Omi, not here.

@@ -11,7 +11,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 export const MAX_PEOPLE = 3;
-// "Dana Okafor.md", "Édouard Urcades.md", "D'Angelo Russell Jr..md"; never "[[Sam Rivera.md" or "[].md".
+// "Dana Okafor.md", "Élodie Marchand.md", "D'Angelo Russell Jr..md"; never "[[Sam Rivera.md" or "[].md".
 const PERSON_FILE = /^\p{L}[\p{L}\p{M} .'’-]{0,60}\.md$/u;
 
 export type GuardContext = {

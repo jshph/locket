@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: astral-sh/setup-uv@v5
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      # The Python tests use fake models, so the 660 MB model download isn't needed.
+      - run: cd asr && uv sync && .venv/bin/python -m pytest -q

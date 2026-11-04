@@ -1,0 +1,31 @@
+# Rendered by deploy/install.sh (@...@ placeholders). Add machine-specific ordering (e.g. a vault
+# sync service) with a drop-in: systemctl edit index-agent.
+[Unit]
+Description=index-agent (ring + Omi webhooks -> vault notes, tasks, threads; local speech service)
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+RequiresMountsFor=@DIR@ @VAULT_DIR@
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+Environment=HOME=@HOME@
+Environment=PATH=@PATH@
+Environment=HOST=127.0.0.1
+Environment=PORT=@PORT@
+ExecStart=@BUN@ run server.ts
+# Public HTTPS via Tailscale Funnel. The config also persists in tailscaled; re-applying is harmless.
+ExecStartPost=-/usr/bin/tailscale funnel --bg --https=@FUNNEL_PORT@ http://127.0.0.1:@PORT@
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=index-agent
+
+[Install]
+WantedBy=multi-user.target

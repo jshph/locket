@@ -87,7 +87,7 @@ test("note is named and formatted like the vault's quick capture notes", () => {
 
 test("titles are cleaned of path and Obsidian-special characters", () => {
   expect(cleanTitle("  Plan: Q4 / roadmap [draft] #ideas?  ")).toBe("plan q4 roadmap draft ideas");
-  expect(localStamp(Date.parse("2026-07-01T16:00:00Z"), "America/Bogota").stamp).toBe("2026-07-01-12-00-00");
+  expect(localStamp(Date.parse("2026-07-01T17:00:00Z"), "America/Bogota").stamp).toBe("2026-07-01-12-00-00");
   expect(noteContent("hi\n\n", "2026-01-01")).toEndWith("\n\nhi\n");
 });
 

@@ -1,125 +1,158 @@
 # index-agent
 
-A self-hosted replacement for the Pebble Index 01 ring's Index agent. The ring app POSTs a signed
-webhook with the transcript; this service saves it, answers immediately, then routes it with
-`claude -p` (your Claude subscription, Opus at low effort) into:
+A self-hosted agent for wearable capture devices. Recordings from a **Pebble Index 01** ring and
+an **Omi** pendant arrive at your own server and become notes in your Markdown vault (Obsidian or
+any folder), Todoist tasks, Google Calendar events, or [bb](https://getbb.app) agent threads. It
+runs on your Claude subscription through `claude -p`, and Omi audio can be transcribed and
+speaker-identified locally on CPU, so it never uses Omi's metered cloud transcription.
 
-| Action | What happens |
+- **Ring:** each Hold & Talk recording is routed by Claude into a note, reminder, calendar event or
+  thread, following the Index app's own rules (adapted from its source).
+- **Omi:** each finished conversation is distilled into one connected note, using
+  [Margins](https://github.com/byenzyme/margins) rules and recall over your vault. Speakers are
+  matched to your `people/` notes. Raw transcripts stay out of the vault.
+- **Speech service:** Parakeet transcription, voice activity detection, and voiceprint
+  speaker identification, all local ([sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)).
+
+It is built for one person on one machine, and assumes a fair amount of tooling (below).
+
+## Requirements
+
+- Linux with systemd, [Bun](https://bun.sh) ≥ 1.2, [uv](https://docs.astral.sh/uv/), Python 3.12
+- [Claude Code](https://claude.com/claude-code) logged in to a Claude subscription (`claude -p`)
+- A public HTTPS URL for this machine. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
+  works well; the unit re-applies it on start.
+- For Omi distillation: the [Margins](https://github.com/byenzyme/margins) CLI with a Workspace
+  over your vault (`margins init <vault>`), so the distiller can run `margins recall`.
+- Optional: Todoist API token, a Google OAuth client, bb, an [ntfy](https://ntfy.sh) topic for
+  phone notifications.
+- About 2 GB RAM for the speech service and 660 MB for its models. A recent 8-core CPU
+  transcribes ~20x faster than real time.
+
+## Setup
+
+```bash
+git clone <this repo> index-agent && cd index-agent
+bun install
+cp .env.example .env            # fill it in (see comments)
+(cd asr && uv sync) && ./scripts/download-models.sh
+bun run check                   # type check + tests
+sudo ./deploy/install.sh        # systemd unit as your user; PORT=8790 FUNNEL_PORT=10000 by default
+```
+
+Load new code later with `./scripts/restart.sh` (no sudo). Logs: `journalctl -u index-agent -f`.
+Startup checks report unusable settings in the log (and one ntfy).
+
+### Pebble Index 01
+
+Index settings → Webhook → choose a gesture → URL `<PUBLIC_URL>/index` → payload
+**Transcription only** → **Sign requests** with `INDEX_WEBHOOK_SECRET` → Send test event →
+Save. Route that gesture to **Webhook only**. Try the router without side effects:
+`bun run scripts/route.ts "remind me tomorrow at 9am to call the bank"`.
+
+### Omi
+
+In the Omi app, Settings → Developer Settings:
+
+- **Webhooks → Conversation created:** `<PUBLIC_URL>/omi/<OMI_WEBHOOK_SECRET>`
+- **Transcription → Custom** (the live/WebSocket one): `wss://<host>/stt/<OMI_WEBHOOK_SECRET>`.
+  This is optional. Without it, Omi's cloud transcribes and diarizes, and that counts against
+  your Omi plan.
+
+Then enroll your voice once: wear the pendant and talk alone for about a minute. When Omi has
+closed the conversation, run `bun run scripts/omi-voice.ts enroll-me latest`. It needs 15 s of a
+single voice; aim for 45–60 s.
+
+### Google Calendar (optional)
+
+Create a "Web application" OAuth client with redirect URI `<PUBLIC_URL>/oauth/google/callback`
+and the consent screen **In production**. Put the ID and secret in `.env`, restart, run
+`bun run scripts/google-auth.ts` and open the printed link. The scope is `calendar.events` only.
+
+## How it works
+
+### Ring recordings
+
+| Action | Result |
 |---|---|
-| `create_note` | `inbox/YYYY-MM-DD-HH-mm-ss <title>.md` in `/path/to/vault`, quick-capture frontmatter (empty `tags:` and `people:`, `created: '[[date]]'`), transcript verbatim. Obsidian Sync carries it to the phone. |
-| `create_reminder` | Todoist task (Todoist parses the due phrase; named lists map to projects, else Inbox). Ported from the app's Todoist plugin. |
-| `start_thread` | New bb thread in the `obsidian` project with the transcript verbatim as the prompt (permission mode from `BB_PERMISSION_MODE`). |
-| `create_calendar_event` | Google Calendar event (default 1 hour), only when the words "calendar" or "event" were said — the app's hard guard; otherwise it becomes a timed reminder. Offered only once Google is connected. |
+| `create_note` | `<INBOX_DIR>/YYYY-MM-DD-HH-mm-ss <title>.md` with the transcript verbatim, empty `tags:`/`people:` frontmatter and `created: '[[date]]'` |
+| `create_reminder` | Todoist task; Todoist parses the due phrase, and named lists map to projects |
+| `start_thread` | bb thread with the transcript verbatim as the prompt |
+| `create_calendar_event` | Google Calendar event (default 1 hour). Only when "calendar" or "event" was said, as in the app; otherwise it becomes a timed reminder |
 
-Routing rules are ported from the Index agent (`reference/upstream/`). Recordings made before 5am
-local time are "late night": "tomorrow" means the day you wake up into (today's date).
+Before 5am local time, "tomorrow" means the day you wake up into.
 
-## Omi conversations → distilled notes
-
-The Omi app's **Conversation created** webhook POSTs each finished conversation (full diarized
-transcript) to `/omi/<OMI_WEBHOOK_SECRET>`. Instead of saving the raw transcript, the service
-distills it into one connected note the way the Margins skill does, using your vault as context:
-
-1. The JSON is saved to `state/omi/conversations/` (kept 30 days, never in the vault) and answered
-   with 200 at once. Repeated conversation IDs and conversations Omi marked `discarded` are ignored,
-   and so are ones Omi labeled `background` (TV, ambient chatter, other people talking) unless you
-   said at least `OMI_BACKGROUND_KEEP_OWNER_WORDS` (60) words in them. Ignored conversations never
-   merge, so background noise can't glue two real conversations into one note.
-2. Conversations less than `OMI_MERGE_GAP_MIN` (10) minutes apart are merged into one note; a group
-   is distilled once nothing new has arrived for that long. Groups under `OMI_MIN_WORDS` (40) are
-   dropped silently.
-3. `claude -p` (Opus, effort `OMI_CLAUDE_EFFORT`, default medium) follows the pinned Margins
-   distillation rules (`reference/margins-skill/`), searches with `margins recall`, reads vault
-   notes, resolves speakers against `people/`, and writes `inbox/<start time> <title>.md`. It may
-   also create up to 3 person notes in `people/` for confirmed participants with no note yet. It
-   can decide a capture has nothing worth keeping (background TV, logistics) and write nothing.
-4. ntfy reports the note title and any new people; "nothing to keep" arrives as low priority.
-   Failures retry after 2m, 10m, 1h, 3h, then send an urgent ntfy; the transcript stays in state.
-   At most `OMI_MAX_NOTES_PER_DAY` (30) distillations per 24 hours; extra ones wait.
-
-Guardrails for the distiller (the transcript is other people's speech, so it is treated as untrusted): Claude Code
-permission rules allow reads only inside the vault, Bash only as `margins --workspace obsidian
-recall`, and writes only directly in `inbox/` and `people/`; a PreToolUse hook
-(`src/omi-guard.ts`) further allows only new files (the assigned note name, one per run; person
-notes with plain names, no case-insensitive clash), edits only to files created in that run, and
-nothing else. No web, MCP, or other tools.
-
-**Omi app setup:**
-- Settings → Developer Settings → Webhooks → **Conversation created** →
-  `https://your-host.your-tailnet.ts.net:10000/omi/<OMI_WEBHOOK_SECRET>` → Save.
-- Settings → Developer Settings → Transcription → **Custom** (the live/WebSocket one) →
-  `wss://your-host.your-tailnet.ts.net:10000/stt/<OMI_WEBHOOK_SECRET>`. Live transcription then
-  runs here instead of on Omi's metered cloud minutes (Omi exempts custom STT from its
-  transcription limit). Without it, everything still works on Omi's transcript.
-
-## Speech service (asr/)
-
-`asr/service.py` (Python, sherpa-onnx on CPU; started and restarted by `server.ts`, localhost
-:8791) does three things:
-
-1. **Live transcription** for the Omi app's Custom STT: Silero VAD cuts utterances, Parakeet TDT
-   0.6B transcribes them (~20x real time), and each line goes back with `is_user` from the owner's
-   voiceprint so Omi's own processing still knows which lines are yours. The raw audio is stored
-   in `state/omi/audio/` with wall-clock timing, kept `OMI_AUDIO_RETENTION_DAYS` (7).
-2. **Re-transcription after each conversation:** when the webhook arrives, the worker asks the
-   service to cut that window from stored audio, re-transcribe it per utterance, label **Me** by
-   voiceprint and group the other voices, and hint at known voices ("resembles Dana Okafor"). That
-   transcript replaces Omi's for the distiller. Recordings the pendant stored offline are
-   transcribed by Omi in its cloud (not in our audio), so those keep Omi's transcript.
-3. **Voiceprints** (`state/omi/voices.json`, biometric data about other people, local only):
-   - **Enroll yourself once:** wear the pendant and talk alone for about a minute, wait for Omi to
-     close the conversation, then `bun run scripts/omi-voice.ts enroll-me latest`. Until then,
-     "Me" is guessed as the clearly loudest voice.
-   - **People are learned** only when the distiller identified a speaker from strong evidence (a
-     name you gave the voice in Omi, a self-introduction, or being addressed by name), the person
-     has a `people/` note, and they spoke 10+ seconds. A voice that sounds like yours is never
-     learned as someone else. ntfy says "Learned voices: …".
-   - `bun run scripts/omi-voice.ts list`, `delete <name>`.
-
-Voice thresholds (`OMI_OWNER_TURN` 0.72, `OMI_OWNER_LIVE` 0.70, `OMI_SAME_SPEAKER` 0.70, `OMI_PERSON_MATCH` 0.70,
-`OMI_VOICE_MARGIN` 0.05, `OMI_DIARIZE_THRESHOLD` 0.45) started on synthetic voices; the owner ones were
-recalibrated on the real enrollment (your 4–9 s utterances score 0.80–0.82). Revisit
-them after real use. Models (~660 MB, `asr/models/`, not in git) come from the sherpa-onnx
-releases; set up a new checkout with `cd asr && uv sync` and the download commands in AGENTS.md.
-
-Try the distiller without the server: `bun run scripts/omi-distill.ts <payload.json>` (writes a
-real note; delete it afterwards). Send a payload through the live endpoint:
-`bun run scripts/omi-send.ts <payload.json>`.
-
-## Google Calendar
-
-One-time setup: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env` (a "Web application" OAuth
-client whose redirect URI is `https://your-host.your-tailnet.ts.net:10000/oauth/google/callback`,
-consent screen **In production**), restart the service, then `bun run scripts/google-auth.ts` and
-open the printed link. The refresh token is kept in `state/google-token.json` (scope
-`calendar.events`). `GOOGLE_CALENDAR_ID` defaults to `primary`.
-
-## Reliability
-
-The phone app sends each webhook once and never retries, so this service owns delivery:
-
-- Every verified delivery is written to `state/jobs/<deliveryId>.json` before the 200 response;
-  repeated delivery IDs are ignored.
-- Router failures (usage limit, logged out) retry after 30s, 2m, 10m, then fall back to a note.
-- Each action retries after 1m, 5m, 15m, 1h, 3h; finished actions never re-run.
+The ring app sends each webhook once and never retries, so this service owns delivery:
+- Every verified delivery is saved before the 200 response, and duplicates are ignored.
+- Routing retries after 30 s, 2 m and 10 m, then falls back to a note.
+- Actions retry after 1 m, 5 m, 15 m, 1 h and 3 h, and finished actions never re-run.
 - If an action fails for good and no note was written, the transcript is saved as a note.
-- ntfy confirms what happened (titles only, never the transcript); problems are sent as high priority.
 
-## Running
+### Omi conversations
 
-- Code: `server.ts`, `src/`; tests: `bun test`
-- Secrets in `.env` (never commit or print): `INDEX_WEBHOOK_SECRET`, `TODOIST_API_TOKEN`, `NTFY_TOPIC`,
-  `OMI_WEBHOOK_SECRET` (the Omi route is off when it's unset)
-- Service: system unit `index-agent` next to `bb-app.service` (`deploy/index-agent.service`);
-  install once with `sudo ./deploy/install.sh`. Load new code with `./scripts/restart.sh` (no sudo).
-  Logs: `journalctl -u index-agent -f`
-- Try the router without side effects: `bun run scripts/route.ts "remind me tomorrow at 9am to call the bank"`
-- Public URL (Tailscale Funnel :10000, re-applied by the unit): `https://your-host.your-tailnet.ts.net:10000/index`
-- Settings via env: `LOCAL_TZ` (default America/Bogota), `CLAUDE_MODEL`, `CLAUDE_EFFORT`,
-  `BB_PROJECT`, `BB_ENVIRONMENT`, `BB_PERMISSION_MODE`, `MAX_SPAWNS_PER_HOUR`, `VAULT_DIR`, `INBOX_DIR`
+1. **Received:** the webhook JSON is saved under `state/omi/` (30 days) and acknowledged at once.
+   Conversations Omi discarded are ignored, and so are ones it labeled `background` (TV, ambient
+   chatter) unless you said 60+ words in them.
+2. **Re-transcribed:** with the speech service on, that conversation's window is cut from the
+   stored audio. Each utterance is transcribed, **Me** is found by your voiceprint, other voices
+   are grouped, and known voices are hinted ("resembles Dana Okafor"). Recordings the pendant
+   stored offline are transcribed by Omi and keep Omi's transcript.
+3. **Merged:** conversations less than 10 minutes apart form one note.
+4. **Distilled:** `claude -p` follows the Margins rules, searches the vault with `margins recall`,
+   resolves speakers against `people/`, and writes one note. It may create up to 3 person notes
+   for confirmed participants. It can also decide there's nothing worth keeping.
+5. **Learned:** a speaker identified from strong evidence becomes that person's voiceprint.
+   Strong evidence means a name you gave the voice in Omi, a self-introduction, or being
+   addressed by name; the person also needs an existing note and 10+ s of speech. A voice that
+   sounds like yours is never learned as someone else.
 
-## Pebble app setup
+ntfy reports note titles, new people and learned voices. Failures retry, then alert; a
+transcript is never dumped into the vault as a fallback.
 
-Index 01 settings → Webhook → gesture → URL above → payload **Transcription only** → **Sign
-requests** with `INDEX_WEBHOOK_SECRET` → Send test event → Save. Route that gesture to
-**Webhook only**.
+**Distiller guardrails.** The transcript is other people's speech, so it is treated as
+untrusted. Claude Code permission rules allow:
+- reads only inside the vault;
+- Bash only as `margins --workspace <id> recall "<query>"`;
+- writes only directly in the inbox and `people/` folders.
+
+A PreToolUse hook (`src/omi-guard.ts`) adds stricter rules:
+- only new files;
+- the assigned note name, one note per run;
+- plainly named person notes, with no case-insensitive clash with an existing one;
+- edits only to files created in that run;
+- no path or search pattern outside the vault.
+
+No web or MCP tools are available.
+
+**Privacy.**
+- Raw audio is kept `OMI_AUDIO_RETENTION_DAYS` (default 7) in `state/omi/audio/`.
+- Voiceprints are biometric data about you and the people you talk with, and some places
+  regulate collecting them. They stay in `state/omi/voices.json`; list or delete them with
+  `scripts/omi-voice.ts list|delete <name>`.
+
+## Configuration
+
+Everything is set in `.env` (see `.env.example`). The commonly tuned settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OMI_MERGE_GAP_MIN` | 10 | Conversations closer than this become one note |
+| `OMI_MIN_WORDS` | 40 | Shorter groups are dropped without a model call |
+| `OMI_MAX_NOTES_PER_DAY` | 30 | Distillations per 24 h; extra ones wait |
+| `OMI_CLAUDE_EFFORT`, `CLAUDE_MODEL`, `CLAUDE_EFFORT` | medium, opus, low | Distiller and router settings |
+| `OMI_OWNER_TURN`, `OMI_OWNER_LIVE` | 0.72, 0.70 | Voiceprint similarity for "Me" (post-conversation, live) |
+| `OMI_SAME_SPEAKER`, `OMI_PERSON_MATCH`, `OMI_VOICE_MARGIN` | 0.70, 0.70, 0.05 | Grouping voices, naming known voices |
+
+The voice thresholds come from one real enrollment on the pendant, where the owner's own 4–9 s
+utterances scored 0.80–0.82. Check them against your own audio.
+
+## Development
+
+`bun run check` runs the strict type check, `bun test` and the Python tests. `AGENTS.md` is the
+operating guide for coding agents (and humans) working on a live install: dry runs, live checks
+and their cleanup, and invariants not to break.
+
+## License
+
+GPL-3.0. Parts are adapted from the Pebble mobile app (GPL-3.0) and the Margins skill
+(Apache-2.0). Model licenses and other attributions are in [NOTICE.md](NOTICE.md).
