@@ -26,8 +26,8 @@ deployment facts and is never committed.
 ## Operate
 
 ```bash
-systemctl status index-agent --no-pager        # the unit runs as the installing user
-journalctl -u index-agent -f                   # JSON lines; never contains transcripts
+systemctl status locket --no-pager             # the unit runs as the installing user
+journalctl -u locket -f                        # JSON lines; never contains transcripts
 ls state/jobs/                                 # one record per ring recording (has transcripts)
 ls state/omi/notes/                            # one record per Omi note; runs/<id>/ has claude output
 curl -s 127.0.0.1:8791/healthz                 # speech service (child of the unit; restarts itself)

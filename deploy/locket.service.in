@@ -1,7 +1,7 @@
 # Rendered by deploy/install.sh (@...@ placeholders). Add machine-specific ordering (e.g. a vault
-# sync service) with a drop-in: systemctl edit index-agent.
+# sync service) with a drop-in: systemctl edit locket.
 [Unit]
-Description=index-agent (ring + Omi webhooks -> vault notes, tasks, threads; local speech service)
+Description=locket (ring + Omi webhooks -> vault notes, tasks, threads; local speech service)
 Wants=network-online.target tailscaled.service
 After=network-online.target tailscaled.service
 RequiresMountsFor=@DIR@ @VAULT_DIR@
@@ -25,7 +25,7 @@ TimeoutStopSec=30
 KillMode=control-group
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=index-agent
+SyslogIdentifier=locket
 
 [Install]
 WantedBy=multi-user.target

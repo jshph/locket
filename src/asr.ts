@@ -132,7 +132,7 @@ export function startAsrService(notify?: Notifier) {
       log("speech service exited, restarting", { code, ranMs, retryInMs: delay });
       if (ranMs < 60_000 && delay >= 40_000 && !alerted) {
         alerted = true;
-        void notify?.("Omi: speech service keeps crashing", "Live transcription and re-transcription are down; Omi's transcripts are used meanwhile. See journalctl -u index-agent.", { urgent: true });
+        void notify?.("Omi: speech service keeps crashing", "Live transcription and re-transcription are down; Omi's transcripts are used meanwhile. See journalctl -u locket (or your unit name).", { urgent: true });
       }
       if (ranMs > 5 * 60_000) alerted = false;
       setTimeout(start, delay);

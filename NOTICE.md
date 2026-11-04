@@ -1,6 +1,6 @@
 # Notices and attribution
 
-index-agent is licensed under the GNU General Public License v3.0 (see `LICENSE`).
+locket is licensed under the GNU General Public License v3.0 (see `LICENSE`).
 
 ## Code and text included or adapted
 

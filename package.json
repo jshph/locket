@@ -1,5 +1,5 @@
 {
-  "name": "index-agent",
+  "name": "locket",
   "version": "0.1.0",
   "private": true,
   "description": "Self-hosted capture agent: Pebble Index 01 ring and Omi pendant recordings become vault notes, tasks and threads, with local transcription and speaker identification.",

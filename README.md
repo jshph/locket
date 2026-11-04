@@ -1,4 +1,6 @@
-# index-agent
+# locket
+
+*A pendant that keeps what matters.*
 
 A self-hosted agent for wearable capture devices. Recordings from a **Pebble Index 01** ring and
 an **Omi** pendant arrive at your own server and become notes in your Markdown vault (Obsidian or
@@ -32,7 +34,7 @@ It is built for one person on one machine, and assumes a fair amount of tooling 
 ## Setup
 
 ```bash
-git clone <this repo> index-agent && cd index-agent
+git clone https://github.com/jshph/locket && cd locket
 bun install
 cp .env.example .env            # fill it in (see comments)
 (cd asr && uv sync) && ./scripts/download-models.sh
@@ -40,7 +42,7 @@ bun run check                   # type check + tests
 sudo ./deploy/install.sh        # systemd unit as your user; PORT=8790 FUNNEL_PORT=10000 by default
 ```
 
-Load new code later with `./scripts/restart.sh` (no sudo). Logs: `journalctl -u index-agent -f`.
+Load new code later with `./scripts/restart.sh` (no sudo). Logs: `journalctl -u locket -f`.
 Startup checks report unusable settings in the log (and one ntfy).
 
 ### Pebble Index 01

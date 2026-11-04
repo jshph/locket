@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs index-agent as a system service running as the invoking user.
+# Installs locket as a system service running as the invoking user.
 # Usage: sudo ./deploy/install.sh   (env: PORT=8790 FUNNEL_PORT=10000)
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo: sudo $0" >&2; exit 1; }
@@ -13,9 +13,9 @@ path="$(dirname "$bun"):$home/.local/bin:/usr/local/bin:/usr/bin:/bin"
 sed -e "s#@USER@#$user#g" -e "s#@DIR@#$dir#g" -e "s#@HOME@#$home#g" -e "s#@BUN@#$bun#g" \
     -e "s#@PATH@#$path#g" -e "s#@VAULT_DIR@#${vault:-$dir}#g" \
     -e "s#@PORT@#${PORT:-8790}#g" -e "s#@FUNNEL_PORT@#${FUNNEL_PORT:-10000}#g" \
-    "$here/index-agent.service.in" > /etc/systemd/system/index-agent.service
-chmod 644 /etc/systemd/system/index-agent.service
+    "$here/locket.service.in" > /etc/systemd/system/locket.service
+chmod 644 /etc/systemd/system/locket.service
 systemctl daemon-reload
-systemctl enable --now index-agent.service
+systemctl enable --now locket.service
 sleep 2
-systemctl --no-pager --lines=5 status index-agent.service
+systemctl --no-pager --lines=5 status locket.service

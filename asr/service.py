@@ -1,4 +1,4 @@
-"""Omi speech service (localhost only; index-agent proxies the public WebSocket and checks the
+"""Omi speech service (localhost only; locket proxies the public WebSocket and checks the
 secret). Three jobs:
 
 1. GET /stt (WebSocket): the Omi app's Custom live transcription. Receives raw PCM16 mono 16 kHz,

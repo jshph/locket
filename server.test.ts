@@ -14,7 +14,7 @@ import { makeHandler } from "./server.ts";
 const http = (h: ReturnType<typeof makeHandler>) => (req: Request) => h(req) as Promise<Response>;
 
 const SECRET = "test-secret-0123456789abcdef0123456789abcdef";
-const tmp = mkdtempSync(join(tmpdir(), "index-agent-"));
+const tmp = mkdtempSync(join(tmpdir(), "locket-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 async function delivery(opts: { transcription?: string; id?: string; isTest?: boolean; secret?: string; skewSec?: number } = {}) {
