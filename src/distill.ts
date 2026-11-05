@@ -21,7 +21,7 @@ export type SpeakerIdentity = { conversation: number; label: string; person: str
 export const LEARNABLE_EVIDENCE = new Set(["omi_name", "self_introduction", "direct_address"]);
 
 export type DistillResult =
-  | { status: "written"; notePath: string; title: string; peopleCreated: string[]; identities: SpeakerIdentity[] }
+  | { status: "written"; notePath: string; title: string; peopleCreated: string[]; peopleLinked?: string[]; identities: SpeakerIdentity[] }
   | { status: "skipped"; reason: string };
 
 export type Distiller = (convs: OmiConversation[], noteId: string) => Promise<DistillResult>;
@@ -233,7 +233,8 @@ export const claudeDistiller: Distiller = async (convs, noteId) => {
       ? so.speaker_identities.filter((x: any) => x && typeof x.label === "string" && typeof x.person === "string")
         .map((x: any) => ({ conversation: Number(x.conversation) || 1, label: x.label, person: x.person, evidence: String(x.evidence) }))
       : [];
-    return { status: "written", notePath: note.slice(vault.length + 1), title, peopleCreated: people, identities };
+    const peopleLinked = Array.isArray(so.people_linked) ? so.people_linked.filter((x: unknown) => typeof x === "string").slice(0, 20) : [];
+    return { status: "written", notePath: note.slice(vault.length + 1), title, peopleCreated: people, peopleLinked, identities };
   }
   // No note: person notes this run created would link to nothing. They are new files only this
   // run wrote, so remove them before the retry.

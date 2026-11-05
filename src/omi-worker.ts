@@ -136,6 +136,17 @@ export async function learnVoices(convs: OmiConversation[], ids: SpeakerIdentity
   return learned;
 }
 
+/** "2:05–2:48 PM · 43 min · with Dana Okafor, Mira Castillo" (or "· just you"). */
+export function noteSummary(convs: OmiConversation[], people: string[], tz: string): string {
+  const start = Math.min(...convs.map((c) => c.startedAt));
+  const end = Math.max(...convs.map((c) => c.finishedAt));
+  const t = (ms: number) => new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(new Date(ms));
+  const mins = Math.max(1, Math.round((end - start) / 60_000));
+  const names = [...new Set(people)];
+  const who = names.length ? `with ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""}` : "just you";
+  return `${t(start)}–${t(end)} · ${mins} min · ${who}`;
+}
+
 let capNotifiedAt = 0;
 
 export async function processNote(note: NoteJob, deps: OmiDeps): Promise<void> {
@@ -166,8 +177,9 @@ export async function processNote(note: NoteJob, deps: OmiDeps): Promise<void> {
       log("omi note written", { note: note.id, path: r.notePath, people: r.peopleCreated });
       const voices = await learnVoices(convs, r.identities ?? [], deps);
       const people = r.peopleCreated.length ? `\nNew people: ${r.peopleCreated.join(", ")}` : "";
+      const summary = noteSummary(convs, [...(r.peopleLinked ?? []), ...r.peopleCreated], config.localTz);
       const learned = voices.length ? `\nLearned voices: ${voices.join(", ")}` : "";
-      await deps.notify("Omi note", `${r.title}\n${r.notePath}${people}${learned}`);
+      await deps.notify("Omi note", `${r.title}\n${summary}\n${r.notePath}${people}${learned}`);
     } else {
       Object.assign(note, { status: "skipped", reason: r.reason });
       deps.store.saveNote(note);
