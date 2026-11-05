@@ -73,6 +73,16 @@ bun run scripts/omi-voice.ts list              # enrolled voiceprints
 - Voices are grouped per pause-delimited utterance, not by pyannote's clusters: pyannote split
   one real speaker into three, and diarized turns can span two people.
 
+## Pendant (Omi CV1) over Bluetooth
+
+`scripts/pendant/omi_pendant.py` (run on a Mac with `uv run`; the server has no Bluetooth):
+`scan`, `status` (stored bytes, unread packets, clock flag, firmware, battery) and `clear --yes`
+(STOP_SYNC 0x03 then RING_CLEAR 0x13, each acknowledged `01 00`). The pendant takes one
+connection, so the phone's Omi app must be force-quit first. `clear` erases audio the pendant stored
+while no phone was streaming; it's the fix for the Omi app's phantom "legacy SD" sync loop (a
+ring-firmware status read misparsed as a file, retried forever). The watchdog's "no audio" alert
+plus no Home card in the app is the sign to use it; a reinstall of the Omi app may still be needed.
+
 ## Omi distiller
 
 - It writes into the real vault. Test with `STATE_DIR=/tmp/... bun run scripts/omi-distill.ts

@@ -136,6 +136,13 @@ No web or MCP tools are available.
   regulate collecting them. They stay in `state/omi/voices.json`; list or delete them with
   `scripts/omi-voice.ts list|delete <name>`.
 
+## Monitoring and recovery
+
+- **Watchdog:** ntfy alerts when live audio stops for 3 h while you're up, or when audio older than
+  an hour never became an Omi conversation; one more when it recovers.
+- **Pendant tool:** `uv run scripts/pendant/omi_pendant.py status|clear --yes` on a Mac reads or
+  clears the pendant's stored audio over Bluetooth (close the phone app first; see AGENTS.md).
+
 ## Configuration
 
 Everything is set in `.env` (see `.env.example`). The commonly tuned settings:
