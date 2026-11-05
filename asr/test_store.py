@@ -57,3 +57,17 @@ def test_voices_match_needs_score_and_margin(tmp_path):
 
 def test_letters():
     assert [letters(i) for i in (0, 1, 25, 26)] == ["A", "B", "Z", "AA"]
+
+
+def test_received_reports_last_audio_and_seconds_since(tmp_path):
+    store = AudioStore(tmp_path)
+    t0 = 1_800_000_000_000
+    s = store.new_session(start_ms=t0)
+    s.append(pcm(2, 1), recv_ms=t0 + 2000)
+    s.append(pcm(3, 1), recv_ms=t0 + 13000)  # resumes at 10 s
+    s.close()
+    last, total = store.received(0)
+    assert last == t0 + 13000 and total == 5
+    assert store.received(t0 + 11000) == (t0 + 13000, 2)
+    assert store.received(0, t0 + 1000) == (t0 + 13000, 1)  # only audio before the bound
+    assert AudioStore(tmp_path / "empty").received(0) == (None, 0)

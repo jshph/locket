@@ -125,6 +125,23 @@ class AudioStore:
                     covered += k
         return out, covered / SR
 
+    def received(self, since_ms: int, until_ms: int | None = None) -> tuple[int | None, float]:
+        """When audio last arrived (wall ms, or None) and how many seconds arrived between
+        [since_ms] and [until_ms] (default: now). Used by the server's watchdog: silence for hours,
+        or older audio that never turned into a conversation."""
+        last, total = None, 0.0
+        for d in self.root.iterdir():
+            if not d.is_dir():
+                continue
+            for r in session_runs(d):
+                end_ms = r.wall_ms + (r.byte_end - r.byte_start) * 1000 // BYTES_PER_SEC
+                last = end_ms if last is None else max(last, end_ms)
+                hi = end_ms if until_ms is None else min(end_ms, until_ms)
+                lo = max(since_ms, r.wall_ms)
+                if hi > lo:
+                    total += (hi - lo) / 1000
+        return last, total
+
     def prune(self):
         cutoff = now_ms() - self.retention_ms
         for d in self.root.iterdir():

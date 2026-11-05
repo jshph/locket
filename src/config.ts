@@ -69,6 +69,12 @@ export const config = {
   asrDir: env.OMI_ASR_DIR ?? new URL("../asr", import.meta.url).pathname,
   asrPython: env.OMI_ASR_PYTHON ?? new URL("../asr/.venv/bin/python", import.meta.url).pathname,
   omiAudioRetentionDays: num("OMI_AUDIO_RETENTION_DAYS", 7),
+  // Watchdog (src/watchdog.ts): ntfy when live audio stops for hours while you're up, or when
+  // audio older than the gap window never became an Omi conversation.
+  omiSilenceAlertHours: num("OMI_SILENCE_ALERT_HOURS", 3),
+  omiAwakeHours: env.OMI_AWAKE_HOURS ?? "8-22",
+  omiGapAlertMinutes: num("OMI_GAP_ALERT_MINUTES", 60),
+  omiGapMinAudioSeconds: num("OMI_GAP_MIN_AUDIO_SECONDS", 120),
 
   ntfyServer: env.NTFY_SERVER ?? "https://ntfy.sh",
   ntfyTopic: env.NTFY_TOPIC ?? "",

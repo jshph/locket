@@ -405,6 +405,14 @@ class App:
         status, out = self.learn_cluster(str(body.get("name", "")).strip(), str(body.get("run_id", "")), str(body.get("cluster")))
         return web.json_response(out, status=status)
 
+    async def stats(self, request: web.Request) -> web.Response:
+        """{last_audio_ms, seconds_since}: last live audio received, and seconds received between
+        ?since_ms and ?until_ms (default now)."""
+        since = int(request.query.get("since_ms", "0") or 0)
+        until = int(request.query["until_ms"]) if request.query.get("until_ms") else None
+        last, total = await asyncio.to_thread(self.store.received, since, until)
+        return web.json_response({"last_audio_ms": last, "seconds_since": round(total, 1)})
+
     async def list_voices(self, _: web.Request) -> web.Response:
         return web.json_response({n: {"samples": len(v["embeddings"]), "updated_ms": v.get("updated_ms"),
                                       "sources": v.get("sources", [])} for n, v in self.voices.load().items()})
@@ -430,6 +438,7 @@ def make_app(models: Models) -> web.Application:
     app = web.Application(client_max_size=64 * 1024 * 1024)
     app.add_routes([
         web.get("/healthz", lambda _: web.Response(text="ok")),
+        web.get("/stats", a.stats),
         web.get("/stt", a.stt),
         web.post("/process", a.process),
         web.post("/voices/enroll", a.enroll),

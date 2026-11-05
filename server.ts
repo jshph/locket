@@ -15,6 +15,7 @@ import { claudeDistiller } from "./src/distill.ts";
 import { exclusionReason, OmiStore, parseOmiPayload } from "./src/omi.ts";
 import { startOmiWorker } from "./src/omi-worker.ts";
 import { asrAvailable, localAsr, startAsrService, sttWebsocket, upgradeStt } from "./src/asr.ts";
+import { startWatchdog } from "./src/watchdog.ts";
 import type { Server } from "bun";
 import { timingSafeEqual } from "node:crypto";
 
@@ -155,6 +156,7 @@ if (import.meta.main) {
       backgroundKeepOwnerWords: config.omiBackgroundKeepOwnerWords, asr: speech ? localAsr : undefined,
     })
     : null;
+  if (speech) startWatchdog(omiStore, ntfyNotifier);
   const omi = omiWorker
     ? { store: omiStore, kick: omiWorker.kick, secret: config.omiWebhookSecret, enrich: Boolean(speech) }
     : undefined;
