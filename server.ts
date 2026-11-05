@@ -74,11 +74,15 @@ export function makeHandler(store: JobStore, kick: () => void, secret = config.w
     const url = new URL(req.url);
     // The Omi app's Custom live transcription (WebSocket), piped to the local speech service.
     if (omi?.enrich && server && req.method === "GET" && url.pathname.startsWith("/stt/")) {
-      if (!secretMatches(omi.secret, url.pathname.slice("/stt/".length))) return new Response("not found", { status: 404 });
+      if (!secretMatches(omi.secret, url.pathname.slice("/stt/".length))) {
+        log("stt rejected", { reason: "wrong secret", listener: opts.name });
+        return new Response("not found", { status: 404 });
+      }
       if (upgradeStt(req, server, url)) {
-        log("stt connected");
+        log("stt connected", { listener: opts.name });
         return undefined;
       }
+      log("stt rejected", { reason: "not a WebSocket upgrade", listener: opts.name });
       return new Response("expected a WebSocket upgrade", { status: 426 });
     }
     if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");

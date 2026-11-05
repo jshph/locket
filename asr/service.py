@@ -76,6 +76,8 @@ class App:
         pending = np.zeros(0, dtype=np.float32)
         queue: asyncio.Queue = asyncio.Queue(maxsize=LIVE_QUEUE_MAX + 1)
         dropped = 0
+        # Protocol diagnostics for the close log: what arrived, what we answered, who ended it.
+        stats = {"binary_frames": 0, "text_frames": {}, "segments_sent": 0, "send_errors": 0, "ended_by": "client_closed"}
         log.info(json.dumps({"msg": "stt connected", "session": session.id,
                              "owner_enrolled": self.voices.centroids().get("me") is not None}))
 
@@ -87,6 +89,7 @@ class App:
                 try:
                     await send_one(*item)
                 except Exception as e:  # one bad utterance must not end live transcription
+                    stats["send_errors"] += 1
                     log.warning(json.dumps({"msg": "stt utterance failed", "session": session.id, "error": str(e)[:200]}))
 
         async def send_one(start: float, samples: np.ndarray):
@@ -109,6 +112,7 @@ class App:
                    "end": round(start + len(samples) / SR, 2), "is_user": is_user}
             if not ws.closed:
                 await ws.send_str(json.dumps({"segments": [seg]}))
+                stats["segments_sent"] += 1
 
         sender = asyncio.create_task(send_results())
 
@@ -125,6 +129,7 @@ class App:
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
+                    stats["binary_frames"] += 1
                     session.append(msg.data)
                     pending = np.concatenate([pending, pcm16_to_float(msg.data)])
                     n = len(pending) // 512 * 512
@@ -135,12 +140,19 @@ class App:
                         drain()
                 elif msg.type == WSMsgType.TEXT:
                     try:
-                        if json.loads(msg.data).get("type") == "CloseStream":
-                            break
+                        kind = str(json.loads(msg.data).get("type", "untyped"))[:40]
                     except (json.JSONDecodeError, AttributeError):
-                        pass
+                        kind = "not_json"
+                    stats["text_frames"][kind] = stats["text_frames"].get(kind, 0) + 1
+                    if kind == "CloseStream":
+                        stats["ended_by"] = "client_closestream"
+                        break
                 elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
+                    stats["ended_by"] = "client_error" if msg.type == WSMsgType.ERROR else "client_closed"
                     break
+        except Exception as e:
+            stats["ended_by"] = f"server_error: {type(e).__name__}"
+            raise
         finally:
             vad.flush()
             drain()
@@ -151,7 +163,7 @@ class App:
                 sender.cancel()
             session.close()
             log.info(json.dumps({"msg": "stt closed", "session": session.id, "seconds": round(session.bytes / (SR * 2), 1),
-                                 "dropped_live": dropped}))
+                                 "dropped_live": dropped, "close_code": ws.close_code, **stats}))
             if not ws.closed:
                 await ws.close()
         return ws

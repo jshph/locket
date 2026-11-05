@@ -149,7 +149,7 @@ export function startAsrService(notify?: Notifier) {
 
 // --- the public WebSocket, piped to the service ---
 
-type SttSocketData = { query: string; upstream?: WebSocket; queue: (string | ArrayBuffer | Uint8Array)[]; queued: number };
+type SttSocketData = { query: string; upstream?: WebSocket; queue: (string | ArrayBuffer | Uint8Array)[]; queued: number; upstreamClose?: number };
 const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
 
 export function upgradeStt(req: Request, server: Server<any>, url: URL): boolean {
@@ -170,7 +170,10 @@ export const sttWebsocket = {
       ws.data.queued = 0;
     };
     up.onmessage = (e) => ws.send(e.data as string);
-    up.onclose = (e) => ws.close(e.code === 1005 || e.code === 1006 ? 1000 : e.code, e.reason);
+    up.onclose = (e) => {
+      ws.data.upstreamClose = e.code;
+      ws.close(e.code === 1005 || e.code === 1006 ? 1000 : e.code, e.reason);
+    };
     up.onerror = () => {
       log("speech service connection failed");
       ws.close(1011, "speech service unavailable");
@@ -188,7 +191,9 @@ export const sttWebsocket = {
     if (ws.data.queued > MAX_QUEUED_BYTES) return ws.close(1011, "speech service not ready");
     ws.data.queue.push(data);
   },
-  close(ws: ServerWebSocket<SttSocketData>) {
+  close(ws: ServerWebSocket<SttSocketData>, code: number, reason: string) {
+    // Who ended it: the phone (code/reason as sent), or the speech service first (upstreamClose).
+    log("stt proxy closed", { phoneCode: code, phoneReason: reason?.slice(0, 80) || undefined, serviceCodeFirst: ws.data.upstreamClose });
     const up = ws.data.upstream;
     if (up && up.readyState <= WebSocket.OPEN) up.close();
   },
